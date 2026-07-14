@@ -1,7 +1,7 @@
 import type { Proposal, PendingChange, ResearchData, PlanningData } from '@/types';
 
 const PLANNING_FIRST = '어떤 애니메이션을 만들고 싶으세요?\n간단한 아이디어도 좋아요. 장르, 분위기, 떠오르는 장면 등 자유롭게 말씀해주세요!';
-const RESEARCH_FIRST = '리서치를 시작할게요!\n유사 작품 분석, 시장 반응, 타깃 분석 등 원하는 방향을 알려주세요. 또는 자료를 첨부해도 됩니다.';
+const RESEARCH_FIRST = '리서치를 시작하기 전에 하나만 확인할게요.\n이 작품은 오리지널인가요, 아니면 원작이 있는 각색 작품인가요? (오른쪽 위 토글도 함께 맞춰주세요) 알려주시면 그에 맞게 리서치를 진행할게요.';
 
 export { PLANNING_FIRST, RESEARCH_FIRST };
 
@@ -19,14 +19,11 @@ export function getMockResearchResponse(input: string, turnIndex: number): Resea
 
   if (turnIndex === 0 || lower.includes('시작') || lower.includes('분석') || lower.includes('리서치')) {
     return {
-      text: '분석을 시작할게요. 유사 작품과 시장 반응을 조사했습니다.',
+      text: '분석을 시작할게요. 유사 작품과 장르 트렌드를 조사했습니다.',
       extractedResearch: {
-        purpose: '유사 작품 분석 및 타깃 시장 파악',
-        subject: '국내외 판타지 애니메이션 트렌드',
-        scope: '2020~2024년 OTT 플랫폼 기반 작품',
-        similarWorks: '소녀혁명 우테나, 마법소녀 마도카☆마기카, 스티븐 유니버스',
-        marketResponse: 'OTT 기반 감성 판타지 수요 증가 추세. 10대 후반~20대 초반 여성 타깃 작품 흥행률 상승.',
-        keyFindings: '감성 성장 서사 + 여성 서사 조합이 현재 가장 높은 반응. 단순 배틀물보다 캐릭터 심리 묘사 선호.',
+        similarWorks: '소녀혁명 우테나, 마법소녀 마도카☆마기카, 스티븐 유니버스. '
+          + 'OTT 기반 감성 판타지 수요 증가 추세 속 흥행작들 — 캐릭터 심리 묘사에 대한 호평이 공통적으로 많음.',
+        genreTrends: '10대 후반~20대 초반 여성 타깃 작품 흥행률 상승. 단순 배틀물 구성에는 피로감을 느낀다는 반응이 많음.',
       },
     };
   }
@@ -56,15 +53,15 @@ export function getMockResearchResponse(input: string, turnIndex: number): Resea
     return {
       text: '차별화 가능성을 분석했습니다.',
       extractedResearch: {
-        differentiation: '감정 성장 + 로봇 서사 조합은 국내에 전례 없는 포지션. 판타지 세계관 내 기계 문명 설정이 차별 포인트.',
-        overusedCliches: '선택받은 주인공, 비밀 특수 능력 각성, 악당의 갑작스러운 선행',
-        newCombinations: '로봇 + 감정 성장 + 판타지 세계관 / 앙상블 구조 + 단독 주인공 없는 서사',
+        differentiation: '감정 성장 + 로봇 서사 조합은 국내에 전례 없는 포지션. 판타지 세계관 내 기계 문명 설정이 차별 포인트. '
+          + '피해야 할 클리셰: 선택받은 주인공, 비밀 특수 능력 각성, 악당의 갑작스러운 선행. '
+          + '시도해볼 조합: 로봇 + 감정 성장 + 판타지 세계관 / 앙상블 구조 + 단독 주인공 없는 서사',
       },
     };
   }
 
   return {
-    text: '흥미로운 포인트네요. 조금 더 구체적으로 말씀해주시면 더 정확한 리서치 결과를 드릴 수 있어요. 유사 작품, 시장 반응, 타깃 분석 중 어느 방향이 궁금하신가요?',
+    text: '흥미로운 포인트네요. 조금 더 구체적으로 말씀해주시면 더 정확한 리서치 결과를 드릴 수 있어요. 유사 작품, 시장 반응, 차별화 가능성 중 어느 방향이 궁금하신가요?',
   };
 }
 

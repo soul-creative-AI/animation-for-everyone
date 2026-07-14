@@ -54,33 +54,21 @@ export type PlanningStatuses = Record<string, FieldStatus | undefined>;
 // ── 리서치 데이터 ─────────────────────────────────────────────
 export interface ResearchData {
   // 공통
-  purpose: string; subject: string; scope: string; summary: string;
-  keyFindings: string; similarWorks: string; marketResponse: string;
-  targetResponse: string; differentiation: string; planningPoints: string;
-  risks: string; sources: string;
-  // 원작 각색
+  similarWorks: string; genreTrends: string;
+  differentiation: string; planningPoints: string;
+  // 원작 각색 전용
   originalTitle: string; originalFormat: string; fullPlot: string;
   episodeSummaries: string; mainCharacters: string; characterRelations: string;
-  worldRules: string; keyEvents: string; emotionalArcs: string; keyTwists: string;
+  keyEvents: string;
   mustKeep: string; compressible: string; removable: string;
-  adaptationRisks: string; fanSensitivities: string;
-  // 오리지널
-  sourceBackground: string; similarMaterials: string; genreTrends: string;
-  targetPreferences: string; overusedCliches: string; newCombinations: string;
-  productionDifficulty: string;
 }
 
 export const defaultResearchData: ResearchData = {
-  purpose: '', subject: '', scope: '', summary: '', keyFindings: '',
-  similarWorks: '', marketResponse: '', targetResponse: '', differentiation: '',
-  planningPoints: '', risks: '', sources: '',
+  similarWorks: '', genreTrends: '',
+  differentiation: '', planningPoints: '',
   originalTitle: '', originalFormat: '', fullPlot: '', episodeSummaries: '',
-  mainCharacters: '', characterRelations: '', worldRules: '', keyEvents: '',
-  emotionalArcs: '', keyTwists: '', mustKeep: '', compressible: '',
-  removable: '', adaptationRisks: '', fanSensitivities: '',
-  sourceBackground: '', similarMaterials: '', genreTrends: '',
-  targetPreferences: '', overusedCliches: '', newCombinations: '',
-  productionDifficulty: '',
+  mainCharacters: '', characterRelations: '', keyEvents: '',
+  mustKeep: '', compressible: '', removable: '',
 };
 
 export type ResearchStatuses = Partial<Record<keyof ResearchData, FieldStatus>>;

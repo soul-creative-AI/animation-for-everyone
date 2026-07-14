@@ -102,7 +102,7 @@ function createProject(): Project {
   return {
     id: crypto.randomUUID(), title: '새 프로젝트', createdAt: now, updatedAt: now,
     sortOrder: 0,
-    selectedTab: 'planning',
+    selectedTab: 'research',
     planningMessages: [{ role: 'assistant', content: PLANNING_FIRST }],
     planning: { ...defaultPlanningData },
     planningStatuses: {},
@@ -140,7 +140,7 @@ export default function Home() {
   const [delConfirm, setDelConfirm] = useState(false);
 
   // 탭
-  const [tab, setTab] = useState<ProjectTab>('planning');
+  const [tab, setTab] = useState<ProjectTab>('research');
 
   // 기획 탭 상태
   const [planningMsgs, setPlanningMsgs]         = useState<Message[]>([{ role: 'assistant', content: PLANNING_FIRST }]);
@@ -335,18 +335,16 @@ export default function Home() {
       setPlanningMsgs((prev) => [...prev, { role: 'assistant', content: data.text }]);
       if (data.extracted) {
         const ext = data.extracted as Record<string, any>;
+        // 사용자가 확정한 필드는 이후 AI 추출로 덮어쓰지 않음
+        const keys = Object.keys(ext).filter((k) => ext[k] && planningStatuses[k] !== 'confirmed');
         setPlanningStatuses((prev) => {
           const s = { ...prev };
-          for (const k of Object.keys(ext)) {
-            if (ext[k]) s[k] = 'inferred';
-          }
+          for (const k of keys) s[k] = 'inferred';
           return s;
         });
         setPlanning((prev) => {
           const u = { ...prev };
-          for (const k of Object.keys(ext)) {
-            if (ext[k]) (u as any)[k] = ext[k];
-          }
+          for (const k of keys) (u as any)[k] = ext[k];
           return u;
         });
       }
@@ -652,7 +650,7 @@ export default function Home() {
 
         {/* 탭 바 */}
         <div className="flex items-center gap-1 px-6 border-b border-gray-200 bg-white shrink-0">
-          {(['planning', 'research'] as ProjectTab[]).map((t) => (
+          {(['research', 'planning'] as ProjectTab[]).map((t) => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-4 py-2.5 text-xs font-semibold transition-colors border-b-2 -mb-px ${
                 tab === t ? 'text-emerald-600 border-emerald-500' : 'text-gray-500 border-transparent hover:text-gray-700'
