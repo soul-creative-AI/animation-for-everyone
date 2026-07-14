@@ -39,3 +39,25 @@ create policy "update own projects"
 create policy "delete own projects"
   on public.projects for delete
   using (auth.uid() = user_id);
+
+-- ── 리서치 원본 파일 저장소 (각색 원작 등) ──────────────────────
+-- 경로 규칙: {user_id}/{project_id}/{파일명} — 첫 폴더가 본인 user_id와 일치해야 접근 가능
+insert into storage.buckets (id, name, public)
+values ('research-sources', 'research-sources', false)
+on conflict (id) do nothing;
+
+create policy "select own research source files"
+  on storage.objects for select
+  using (bucket_id = 'research-sources' and (storage.foldername(name))[1] = auth.uid()::text);
+
+create policy "insert own research source files"
+  on storage.objects for insert
+  with check (bucket_id = 'research-sources' and (storage.foldername(name))[1] = auth.uid()::text);
+
+create policy "update own research source files"
+  on storage.objects for update
+  using (bucket_id = 'research-sources' and (storage.foldername(name))[1] = auth.uid()::text);
+
+create policy "delete own research source files"
+  on storage.objects for delete
+  using (bucket_id = 'research-sources' and (storage.foldername(name))[1] = auth.uid()::text);

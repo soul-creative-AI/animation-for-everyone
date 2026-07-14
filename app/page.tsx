@@ -447,9 +447,93 @@ export default function Home() {
     }, 2000);
   }
 
+  /* ── 파일 첨부: Supabase Storage에 실제 업로드 ── */
+  async function uploadFileSource(file: File) {
+    const src: UploadedSource = {
+      id: crypto.randomUUID(), type: 'file', name: file.name,
+      uploadStatus: 'uploading', analysisStatus: 'pending',
+    };
+    setUploadedSources((prev) => [...prev, src]);
+    setResearchMsgs((prev) => [...prev, { role: 'user', content: '', card: { type: 'attachment', source: src } }]);
+    setSaved(false);
+
+    const path = `${userId}/${currentId}/${src.id}_${file.name}`;
+    const { error } = await supabase.storage.from('research-sources').upload(path, file);
+
+    if (error) {
+      console.error('파일 업로드 실패:', error);
+      setUploadedSources((prev) => prev.map((s) => s.id === src.id ? { ...s, uploadStatus: 'error' } : s));
+      setResearchMsgs((prev) => prev.map((m) =>
+        m.card?.type === 'attachment' && m.card.source.id === src.id
+          ? { ...m, card: { type: 'attachment', source: { ...src, uploadStatus: 'error' } } }
+          : m
+      ));
+      return;
+    }
+
+    // 카드 상태 갱신 헬퍼
+    const setSourceStatus = (patch: Partial<UploadedSource>) => {
+      setUploadedSources((prev) => prev.map((s) => s.id === src.id ? { ...s, ...patch } : s));
+      setResearchMsgs((prev) => prev.map((m) =>
+        m.card?.type === 'attachment' && m.card.source.id === src.id
+          ? { ...m, card: { type: 'attachment', source: { ...m.card.source, ...patch } } }
+          : m
+      ));
+    };
+
+    // 텍스트 계열 파일만 AI 분석 대상 (이미지/PDF 등은 저장만)
+    const isTextFile = file.type.startsWith('text/') || /\.(txt|md|markdown|csv)$/i.test(file.name);
+    if (!isTextFile) {
+      setSourceStatus({ uploadStatus: 'done', storagePath: path, analysisStatus: 'done' });
+      setResearchMsgs((prev) => [...prev, { role: 'assistant', content: `"${file.name}" 파일을 저장했어요. (이미지·PDF 등은 자동 분석 대상이 아니라 저장만 했습니다.)` }]);
+      return;
+    }
+
+    setSourceStatus({ uploadStatus: 'done', storagePath: path, analysisStatus: 'analyzing' });
+
+    // 원작 텍스트를 읽어 AI로 각색 리서치 필드 추출
+    try {
+      const text = await file.text();
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, model }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      const ext = (data.extracted ?? {}) as Partial<ResearchData>;
+      const keys = (Object.keys(ext) as (keyof ResearchData)[]).filter((k) => ext[k]);
+
+      if (keys.length > 0) {
+        setResearch((prev) => {
+          const u = { ...prev };
+          for (const k of keys) u[k] = ext[k] as string;
+          return u;
+        });
+        setResearchStatuses((prev) => {
+          const s = { ...prev };
+          for (const k of keys) s[k] = 'inferred';
+          return s;
+        });
+      }
+
+      setSourceStatus({ analysisStatus: 'done' });
+      setResearchMsgs((prev) => [...prev, {
+        role: 'assistant',
+        content: keys.length > 0
+          ? `"${file.name}" 원작을 분석해서 오른쪽 리서치 정보를 채웠어요. 확인하고 수정하거나, 더 궁금한 점을 물어봐주세요.`
+          : `"${file.name}"을 읽었는데 각색 리서치 정보를 뽑아내지 못했어요. 파일 내용을 확인해주세요.`,
+      }]);
+    } catch (e) {
+      console.error('원작 분석 실패:', e);
+      setSourceStatus({ analysisStatus: 'error' });
+      setResearchMsgs((prev) => [...prev, { role: 'assistant', content: `"${file.name}" 분석 중 오류가 발생했어요. 다시 시도해주세요.` }]);
+    }
+  }
+
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (file) addSource('file', file.name);
+    if (file) uploadFileSource(file);
     e.target.value = '';
     setAttachOpen(false);
   }
@@ -849,8 +933,6 @@ export default function Home() {
             <ResearchPanel
               research={research}
               statuses={researchStatuses}
-              mode={researchMode}
-              onModeChange={(m) => { setResearchMode(m); setSaved(false); }}
               onChange={handleResearchFieldChange}
             />
           )}

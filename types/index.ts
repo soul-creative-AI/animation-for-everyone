@@ -80,6 +80,7 @@ export interface UploadedSource {
   name: string;
   uploadStatus: 'uploading' | 'done' | 'error';
   analysisStatus: 'pending' | 'analyzing' | 'done' | 'error';
+  storagePath?: string; // Supabase Storage(research-sources 버킷) 안의 원본 파일 경로, type: 'file'만 해당
 }
 
 // ── A/B/C 제안 ────────────────────────────────────────────────

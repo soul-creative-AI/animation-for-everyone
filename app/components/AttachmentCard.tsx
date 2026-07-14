@@ -5,18 +5,10 @@ const TYPE_ICON: Record<UploadedSource['type'], string> = {
   file: '📄', link: '🔗', text: '📝',
 };
 
-const ANALYSIS_LABEL: Record<UploadedSource['analysisStatus'], string> = {
-  pending:   '분석 대기',
-  analyzing: '분석 중...',
-  done:      '분석 완료',
-  error:     '분석 실패',
-};
-
-const ANALYSIS_CLS: Record<UploadedSource['analysisStatus'], string> = {
-  pending:   'text-gray-400',
-  analyzing: 'text-blue-500',
-  done:      'text-emerald-600',
-  error:     'text-red-500',
+// 분석 진행/실패만 표시 (완료·대기는 채팅 메시지로 안내되므로 배지 생략)
+const ANALYSIS_INFO: Partial<Record<UploadedSource['analysisStatus'], { label: string; cls: string }>> = {
+  analyzing: { label: '분석 중...', cls: 'text-blue-500' },
+  error:     { label: '분석 실패', cls: 'text-red-500' },
 };
 
 interface Props {
@@ -32,10 +24,14 @@ export default function AttachmentCard({ source, onDelete }: Props) {
         <p className="text-xs font-semibold text-gray-800 truncate">{source.name}</p>
         <p className="text-[10px] text-gray-400 mt-0.5">
           {source.uploadStatus === 'uploading' ? '업로드 중...' : '업로드 완료'}
-          {' · '}
-          <span className={ANALYSIS_CLS[source.analysisStatus]}>
-            {ANALYSIS_LABEL[source.analysisStatus]}
-          </span>
+          {ANALYSIS_INFO[source.analysisStatus] && (
+            <>
+              {' · '}
+              <span className={ANALYSIS_INFO[source.analysisStatus]!.cls}>
+                {ANALYSIS_INFO[source.analysisStatus]!.label}
+              </span>
+            </>
+          )}
         </p>
       </div>
       <button
