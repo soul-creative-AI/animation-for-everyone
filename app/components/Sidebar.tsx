@@ -10,9 +10,10 @@ interface Props {
   onNew: () => void;
   onSelect: (id: string) => void;
   onReorder: (orderedIds: string[]) => void;
+  onShowUsage: () => void;
 }
 
-export default function Sidebar({ projects, currentId, pct, onNew, onSelect, onReorder }: Props) {
+export default function Sidebar({ projects, currentId, pct, onNew, onSelect, onReorder, onShowUsage }: Props) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
@@ -77,6 +78,12 @@ export default function Sidebar({ projects, currentId, pct, onNew, onSelect, onR
           <div className="h-full bg-emerald-400 rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
         </div>
         <p className="text-xs text-emerald-600 font-semibold mt-1.5">{pct}%</p>
+        <button
+          onClick={onShowUsage}
+          className="mt-3 w-full text-left text-[11px] text-gray-500 hover:text-emerald-600 transition-colors"
+        >
+          💰 팀 AI 사용량 보기
+        </button>
       </div>
     </aside>
   );

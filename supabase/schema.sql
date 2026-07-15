@@ -64,9 +64,12 @@ create policy "delete own research source files"
 
 -- ── AI 사용량 기록 (모델별 토큰/비용 추적) ──────────────────────
 -- append-only 로그. 예산/사용량 집계에 사용.
+-- API 키 1개를 팀원 여럿이 공유하는 구조라, user_email을 같이 저장해서
+-- 팀 전체 사용량 화면에서 "누가 얼마 썼는지" 바로 보여줄 수 있게 함.
 create table if not exists public.usage_logs (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
+  user_email text,                             -- 기록 시점의 이메일 (표시용, auth.users 조인 불필요)
   project_id uuid references public.projects(id) on delete set null,
   model text not null,                         -- 'gemini' | 'claude-fable' | 'gpt-4o' 등
   feature text not null,                       -- 'planning-chat' | 'research-analyze' 등
@@ -77,15 +80,54 @@ create table if not exists public.usage_logs (
   created_at timestamptz not null default now()
 );
 
+-- 이미 테이블이 있던 경우를 위한 컬럼 추가 (신규 생성 시엔 위에서 이미 포함됨)
+alter table public.usage_logs add column if not exists user_email text;
+
 create index if not exists usage_logs_user_created_idx on public.usage_logs(user_id, created_at);
 
 alter table public.usage_logs enable row level security;
 
--- 로그는 본인 것만 조회/생성 (수정·삭제 불가 — append-only)
-create policy "select own usage logs"
+-- 팀 전체가 같은 API 키를 공유하므로, 로그인한 사람이면 누구나 전체 사용량을 조회 가능
+-- (기존엔 본인 것만 조회 가능했으나, 팀 예산 공유 화면을 위해 범위를 넓힘)
+drop policy if exists "select own usage logs" on public.usage_logs;
+create policy "select usage logs (team-wide)"
   on public.usage_logs for select
-  using (auth.uid() = user_id);
+  to authenticated
+  using (true);
 
+-- 생성은 본인 이름으로만 가능 (남의 user_id로 기록 위조 방지) — 수정·삭제 정책 없음(append-only)
 create policy "insert own usage logs"
   on public.usage_logs for insert
   with check (auth.uid() = user_id);
+
+-- ── 프로바이더별 충전 예산 (운영자만 수정) ──────────────────────
+-- 팀원 모두가 잔액을 조회하되, 충전액 수정은 운영자 계정만 가능.
+create table if not exists public.provider_budgets (
+  provider text primary key,            -- 'claude' | 'openai' | 'gemini'
+  budget_usd numeric(12, 2) not null default 0,
+  billing_date date,                    -- 충전(결제)일 — "이 예산은 이 날짜 기준 한 달치" 안내용
+  updated_at timestamptz not null default now()
+);
+
+-- 이미 테이블이 있던 경우를 위한 컬럼 추가
+alter table public.provider_budgets add column if not exists billing_date date;
+
+-- 초기값 (수수료 뺀 실제 충전 달러로 운영자가 나중에 조정)
+insert into public.provider_budgets (provider, budget_usd, billing_date) values
+  ('claude', 21, '2026-07-14'), ('openai', 13, '2026-07-14'), ('gemini', 10, '2026-07-14')
+on conflict (provider) do nothing;
+
+alter table public.provider_budgets enable row level security;
+
+-- 조회: 로그인한 팀원 누구나
+create policy "select provider budgets"
+  on public.provider_budgets for select
+  to authenticated
+  using (true);
+
+-- 수정(update): 운영자 이메일 계정만 (화면 숨김만으로는 우회 가능하므로 DB에서도 강제)
+create policy "admin update provider budgets"
+  on public.provider_budgets for update
+  to authenticated
+  using ((auth.jwt() ->> 'email') = 'mina214@sookmyung.ac.kr')
+  with check ((auth.jwt() ->> 'email') = 'mina214@sookmyung.ac.kr');

@@ -15,6 +15,7 @@ import { createClient } from '@/lib/supabase/client';
 import { useProjects } from '@/lib/hooks/useProjects';
 import Sidebar from './components/Sidebar';
 import AppHeader from './components/AppHeader';
+import UsageSummary from './components/UsageSummary';
 import PlanningPanel from './components/PlanningPanel';
 import ResearchPanel from './components/ResearchPanel';
 import AttachmentCard from './components/AttachmentCard';
@@ -27,6 +28,7 @@ export default function Home() {
   // 인증 상태
   const supabase = createClient();
   const [userId, setUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
   const [showAuth, setShowAuth] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
 
@@ -63,11 +65,15 @@ export default function Home() {
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachMode, setAttachMode] = useState<'link' | 'text' | null>(null);
   const [attachInput, setAttachInput] = useState('');
+  const [dragOverChat, setDragOverChat] = useState(false);
+  const [pendingDropFile, setPendingDropFile] = useState<File | null>(null);
+  const [showUsage, setShowUsage] = useState(false);
 
   const bottomRef   = useRef<HTMLDivElement>(null);
   const modelRef    = useRef<HTMLDivElement>(null);
   const attachRef   = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 현재 탭 메시지
   const messages    = tab === 'planning' ? planningMsgs    : researchMsgs;
@@ -80,6 +86,7 @@ export default function Home() {
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user.id) {
           setUserId(session.user.id);
+          setUserEmail(session.user.email ?? null);
         } else {
           setShowAuth(true);
         }
@@ -110,6 +117,17 @@ export default function Home() {
   }, []);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  /* ── 자동저장: 변경 후 2초간 조용하면 자동으로 저장 ── */
+  useEffect(() => {
+    if (saved || !currentId) return;
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    autoSaveTimer.current = setTimeout(() => { handleSave(); }, 2000);
+    return () => {
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title, planningMsgs, planning, planningStatuses, researchMsgs, research, researchStatuses, researchMode, uploadedSources, pendingChanges]);
 
   /* ── 프로젝트 로드 ── */
   function applyProject(p: Project) {
@@ -216,6 +234,7 @@ export default function Home() {
     try {
       await supabase.from('usage_logs').insert({
         user_id: userId,
+        user_email: userEmail,
         project_id: currentId || null,
         model,
         feature,
@@ -364,7 +383,9 @@ export default function Home() {
     setResearchMsgs((prev) => [...prev, { role: 'user', content: '', card: { type: 'attachment', source: src } }]);
     setSaved(false);
 
-    const path = `${userId}/${currentId}/${src.id}_${file.name}`;
+    // Storage 키에 안전하지 않은 문자([, ], 공백 등)는 밑줄로 치환 (화면 표시용 file.name은 그대로 유지)
+    const safeName = file.name.replace(/[^\p{L}\p{N}._-]/gu, '_');
+    const path = `${userId}/${currentId}/${src.id}_${safeName}`;
     const { error } = await supabase.storage.from('research-sources').upload(path, file);
 
     if (error) {
@@ -446,6 +467,24 @@ export default function Home() {
     setAttachOpen(false);
   }
 
+  /* ── 드래그 앤 드롭 첨부 (리서치 탭 전용) ── */
+  function handleChatDragOver(e: React.DragEvent) {
+    if (tab !== 'research') return;
+    e.preventDefault();
+    setDragOverChat(true);
+  }
+  function handleChatDragLeave(e: React.DragEvent) {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setDragOverChat(false);
+  }
+  function handleChatDrop(e: React.DragEvent) {
+    if (tab !== 'research') return;
+    e.preventDefault();
+    setDragOverChat(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) setPendingDropFile(file);
+  }
+
   function submitAttach() {
     if (!attachInput.trim()) return;
     addSource(attachMode === 'link' ? 'link' : 'text', attachInput.trim());
@@ -519,6 +558,7 @@ export default function Home() {
     try {
       await supabase.auth.signOut();
       setUserId(null);
+      setUserEmail(null);
       setShowAuth(true);
     } catch (e) {
       console.error('Logout failed:', e);
@@ -553,6 +593,7 @@ export default function Home() {
         onNew={handleNew}
         onSelect={selectProject}
         onReorder={handleReorder}
+        onShowUsage={() => setShowUsage(true)}
       />
 
       {/* ── 중앙 + 우측 ── */}
@@ -593,7 +634,18 @@ export default function Home() {
         <div className="flex flex-1 overflow-hidden">
 
           {/* 채팅 패널 */}
-          <div className="flex flex-col flex-1" style={{ minWidth: 0 }}>
+          <div
+            className="relative flex flex-col flex-1"
+            style={{ minWidth: 0 }}
+            onDragOver={handleChatDragOver}
+            onDragLeave={handleChatDragLeave}
+            onDrop={handleChatDrop}
+          >
+            {dragOverChat && (
+              <div className="absolute inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-emerald-400 bg-emerald-50/80 pointer-events-none">
+                <p className="text-sm font-semibold text-emerald-600">여기에 파일을 놓아주세요</p>
+              </div>
+            )}
             {/* 메시지 목록 */}
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
               {messages.map((m, i) => {
@@ -776,6 +828,33 @@ export default function Home() {
           )}
         </div>
       </div>
+
+      {/* 팀 AI 사용량 */}
+      {showUsage && <UsageSummary userEmail={userEmail} onClose={() => setShowUsage(false)} />}
+
+      {/* 드래그로 끌어온 파일 첨부 확인 */}
+      {pendingDropFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className="bg-white rounded-2xl shadow-xl p-5 w-80">
+            <p className="text-sm font-semibold text-gray-800 mb-1">이 파일을 첨부하시겠습니까?</p>
+            <p className="text-xs text-gray-500 mb-4 truncate">{pendingDropFile.name}</p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setPendingDropFile(null)}
+                className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors"
+              >
+                취소
+              </button>
+              <button
+                onClick={() => { uploadFileSource(pendingDropFile); setPendingDropFile(null); }}
+                className="px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors"
+              >
+                첨부
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
