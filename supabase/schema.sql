@@ -61,3 +61,31 @@ create policy "update own research source files"
 create policy "delete own research source files"
   on storage.objects for delete
   using (bucket_id = 'research-sources' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- ── AI 사용량 기록 (모델별 토큰/비용 추적) ──────────────────────
+-- append-only 로그. 예산/사용량 집계에 사용.
+create table if not exists public.usage_logs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  project_id uuid references public.projects(id) on delete set null,
+  model text not null,                         -- 'gemini' | 'claude-fable' | 'gpt-4o' 등
+  feature text not null,                       -- 'planning-chat' | 'research-analyze' 등
+  input_tokens integer not null default 0,
+  output_tokens integer not null default 0,
+  cached_input_tokens integer not null default 0,
+  cost_usd numeric(12, 6) not null default 0,  -- 근사 비용 (lib/usage.ts 단가 기준)
+  created_at timestamptz not null default now()
+);
+
+create index if not exists usage_logs_user_created_idx on public.usage_logs(user_id, created_at);
+
+alter table public.usage_logs enable row level security;
+
+-- 로그는 본인 것만 조회/생성 (수정·삭제 불가 — append-only)
+create policy "select own usage logs"
+  on public.usage_logs for select
+  using (auth.uid() = user_id);
+
+create policy "insert own usage logs"
+  on public.usage_logs for insert
+  with check (auth.uid() = user_id);

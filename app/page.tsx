@@ -10,6 +10,7 @@ import { defaultPlanningData, defaultResearchData } from '@/types';
 import { PLANNING_FIRST, RESEARCH_FIRST, getMockResearchResponse, getMockProposals } from '@/lib/mock';
 import { MODELS, type ModelId } from '@/lib/models';
 import { createProject } from '@/lib/project';
+import { type TokenUsage, estimateCostUsd } from '@/lib/usage';
 import { createClient } from '@/lib/supabase/client';
 import { useProjects } from '@/lib/hooks/useProjects';
 import Sidebar from './components/Sidebar';
@@ -207,6 +208,27 @@ export default function Home() {
     a.click(); URL.revokeObjectURL(a.href);
   }
 
+  /* ── AI 사용량 기록 (usage_logs) ── */
+  async function recordUsage(feature: string, usage?: TokenUsage) {
+    if (!userId || !usage) return;
+    const empty = !usage.inputTokens && !usage.outputTokens && !usage.cachedInputTokens;
+    if (empty) return;
+    try {
+      await supabase.from('usage_logs').insert({
+        user_id: userId,
+        project_id: currentId || null,
+        model,
+        feature,
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+        cached_input_tokens: usage.cachedInputTokens,
+        cost_usd: estimateCostUsd(model, usage),
+      });
+    } catch (e) {
+      console.error('사용량 기록 실패:', e);
+    }
+  }
+
   /* ── 기획 탭: AI 전송 ── */
   async function sendPlanning(userMsg: Message, next: Message[]) {
     try {
@@ -216,6 +238,7 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      recordUsage('planning-chat', data.usage);
       setPlanningMsgs((prev) => [...prev, { role: 'assistant', content: data.text }]);
       if (data.extracted) {
         const ext = data.extracted as Record<string, any>;
@@ -384,6 +407,7 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      recordUsage('research-analyze', data.usage);
 
       const ext = (data.extracted ?? {}) as Partial<ResearchData>;
       const keys = (Object.keys(ext) as (keyof ResearchData)[]).filter((k) => ext[k]);
