@@ -274,8 +274,9 @@ export default function Home() {
           return u;
         });
       }
-    } catch {
-      setPlanningMsgs((prev) => [...prev, { role: 'assistant', content: '오류가 발생했습니다. 다시 시도해주세요.' }]);
+    } catch (e: any) {
+      const content = e?.message || '오류가 발생했습니다. 다시 시도해주세요.';
+      setPlanningMsgs((prev) => [...prev, { role: 'assistant', content }]);
     }
   }
 
@@ -453,10 +454,11 @@ export default function Home() {
           ? `"${file.name}" 원작을 분석해서 오른쪽 리서치 정보를 채웠어요. 확인하고 수정하거나, 더 궁금한 점을 물어봐주세요.`
           : `"${file.name}"을 읽었는데 각색 리서치 정보를 뽑아내지 못했어요. 파일 내용을 확인해주세요.`,
       }]);
-    } catch (e) {
+    } catch (e: any) {
       console.error('원작 분석 실패:', e);
       setSourceStatus({ analysisStatus: 'error' });
-      setResearchMsgs((prev) => [...prev, { role: 'assistant', content: `"${file.name}" 분석 중 오류가 발생했어요. 다시 시도해주세요.` }]);
+      const content = e?.message || `"${file.name}" 분석 중 오류가 발생했어요. 다시 시도해주세요.`;
+      setResearchMsgs((prev) => [...prev, { role: 'assistant', content }]);
     }
   }
 

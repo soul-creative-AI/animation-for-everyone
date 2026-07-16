@@ -1,13 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { PROVIDER_OF_MODEL, PROVIDER_LABEL, DEFAULT_BUDGET_USD, ADMIN_EMAIL, type Provider } from '@/lib/budgets';
+import { PROVIDER_OF_MODEL, PROVIDER_LABEL, DEFAULT_BUDGET_USD, ADMIN_EMAIL, billingPeriodStart, type Provider } from '@/lib/budgets';
 import type { ModelId } from '@/lib/models';
 
 interface UsageRow {
   model: string;
   cost_usd: number;
   user_email: string | null;
+  created_at: string;
 }
 
 const PROVIDERS: Provider[] = ['claude', 'openai', 'gemini'];
@@ -15,6 +16,14 @@ const PROVIDERS: Provider[] = ['claude', 'openai', 'gemini'];
 // 예산이 소액이라 0.01달러 미만 사용량도 보이도록 소수점 4자리까지 표시
 function fmtUsd(n: number) {
   return `$${n.toFixed(4)}`;
+}
+
+// 사용 기간 표시용 (예: "7월 14일 ~ 8월 13일") — 잠금 판정에 쓰는 billingPeriodStart와 같은 기준
+function formatBillingPeriod(billingDate: string, today = new Date()) {
+  const start = billingPeriodStart(billingDate, today);
+  const end = new Date(start.getFullYear(), start.getMonth() + 1, start.getDate() - 1);
+  const fmt = (d: Date) => `${d.getMonth() + 1}월 ${d.getDate()}일`;
+  return `${fmt(start)} ~ ${fmt(end)}`;
 }
 
 interface Props {
@@ -38,7 +47,7 @@ export default function UsageSummary({ userEmail, onClose }: Props) {
   useEffect(() => {
     const supabase = createClient();
     // 사용량 로그
-    supabase.from('usage_logs').select('model, cost_usd, user_email').then(({ data, error }) => {
+    supabase.from('usage_logs').select('model, cost_usd, user_email, created_at').then(({ data, error }) => {
       if (error) { setError(error.message); return; }
       setRows((data ?? []) as UsageRow[]);
     });
@@ -107,12 +116,14 @@ export default function UsageSummary({ userEmail, onClose }: Props) {
     }
   }
 
-  // 집계
+  // 집계 (이번 결제 주기 사용량만 — API 라우트의 잠금 판정과 동일한 기준)
   const byProvider: Record<Provider, number> = { claude: 0, openai: 0, gemini: 0 };
   const byUserProvider = new Map<string, Record<Provider, number>>();
   for (const row of rows ?? []) {
     const provider = PROVIDER_OF_MODEL[row.model as ModelId];
     if (!provider) continue;
+    const billingDate = billingDates[provider];
+    if (billingDate && new Date(row.created_at) < billingPeriodStart(billingDate)) continue;
     byProvider[provider] += Number(row.cost_usd);
     const email = row.user_email ?? '(알 수 없음)';
     if (!byUserProvider.has(email)) byUserProvider.set(email, { claude: 0, openai: 0, gemini: 0 });
@@ -152,10 +163,18 @@ export default function UsageSummary({ userEmail, onClose }: Props) {
                 const total = budgets[p];
                 const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
                 const remaining = Math.max(0, total - used);
+                const locked = used >= total;
                 return (
                   <div key={p}>
                     <div className="flex justify-between items-center text-xs mb-1">
-                      <span className="font-semibold text-gray-700">{PROVIDER_LABEL[p]}</span>
+                      <span className="font-semibold text-gray-700 flex items-center gap-1.5">
+                        {PROVIDER_LABEL[p]}
+                        {!editing && locked && (
+                          <span className="text-[10px] font-semibold text-red-500 bg-red-50 px-1.5 py-0.5 rounded-full">
+                            🔒 한도 도달
+                          </span>
+                        )}
+                      </span>
                       {editing ? (
                         <span className="flex items-center gap-1.5 text-gray-500">
                           충전액 $
@@ -184,14 +203,15 @@ export default function UsageSummary({ userEmail, onClose }: Props) {
                     <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all ${
-                          pct >= 90 ? 'bg-red-400' : pct >= 70 ? 'bg-amber-400' : 'bg-emerald-400'
+                          locked ? 'bg-red-500' : pct >= 70 ? 'bg-amber-400' : 'bg-emerald-400'
                         }`}
                         style={{ width: `${pct}%` }}
                       />
                     </div>
                     {!editing && billingDates[p] && (
                       <p className="text-[10px] text-gray-400 mt-0.5">
-                        충전일 {billingDates[p]} (한 달 기준)
+                        사용 가능 기간: {formatBillingPeriod(billingDates[p]!)}
+                        {locked && ' · 이번 주기 API 호출이 차단됩니다'}
                       </p>
                     )}
                   </div>

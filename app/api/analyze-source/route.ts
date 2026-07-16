@@ -4,6 +4,7 @@ import OpenAI from 'openai';
 import { NextRequest, NextResponse } from 'next/server';
 import type { ResearchData } from '@/types';
 import { type TokenUsage, EMPTY_USAGE, claudeUsage, openaiUsage, geminiUsage } from '@/lib/usage';
+import { checkBudgetLock, budgetLockMessage } from '@/lib/budgetGuard';
 
 interface AiResult { text: string; usage: TokenUsage; }
 
@@ -80,6 +81,11 @@ export async function POST(req: NextRequest) {
 
     if (!text || !text.trim()) {
       return NextResponse.json({ error: '분석할 텍스트가 비어 있습니다.' }, { status: 400 });
+    }
+
+    const lock = await checkBudgetLock(model);
+    if (lock?.locked) {
+      return NextResponse.json({ error: budgetLockMessage(lock) }, { status: 402 });
     }
 
     let result: AiResult = { text: '', usage: EMPTY_USAGE };

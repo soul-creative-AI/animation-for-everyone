@@ -4,6 +4,7 @@ import OpenAI from 'openai';
 import { NextRequest, NextResponse } from 'next/server';
 import type { Message, PlanningData } from '@/types';
 import { type TokenUsage, EMPTY_USAGE, claudeUsage, openaiUsage, geminiUsage } from '@/lib/usage';
+import { checkBudgetLock, budgetLockMessage } from '@/lib/budgetGuard';
 
 interface AiResult { text: string; usage: TokenUsage; }
 
@@ -96,6 +97,11 @@ async function callOpenAI(messages: Message[], modelId: string): Promise<AiResul
 export async function POST(req: NextRequest) {
   try {
     const { messages, model = 'gemini' }: { messages: Message[]; model?: ModelId } = await req.json();
+
+    const lock = await checkBudgetLock(model);
+    if (lock?.locked) {
+      return NextResponse.json({ error: budgetLockMessage(lock) }, { status: 402 });
+    }
 
     let result: AiResult = { text: '', usage: EMPTY_USAGE };
 
