@@ -3,13 +3,20 @@ import type { PlatformMetric } from '@/types';
 
 interface Props {
   metrics: PlatformMetric[];
+  originalTitle?: string;  // 검색 링크 생성용 (URL 미확인 플랫폼)
   onAdd: () => void;
   onUpdate: (id: string, patch: Partial<PlatformMetric>) => void;
   onRemove: (id: string) => void;
 }
 
+// 플랫폼명 + 작품명으로 구글 검색 URL 생성 (네이버시리즈 등 직접 링크를 못 찾은 플랫폼용)
+function searchUrl(platform: string, title: string) {
+  const q = [platform, title].filter((s) => s && s.trim()).join(' ');
+  return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+}
+
 // 플랫폼별로 조회수·평점을 따로 입력하는 에디터
-export default function PlatformMetricsEditor({ metrics, onAdd, onUpdate, onRemove }: Props) {
+export default function PlatformMetricsEditor({ metrics, originalTitle = '', onAdd, onUpdate, onRemove }: Props) {
   const rows = metrics ?? [];  // 레거시 데이터 방어 (platformMetrics 없던 프로젝트)
   return (
     <div className="space-y-2">
@@ -48,6 +55,21 @@ export default function PlatformMetricsEditor({ metrics, onAdd, onUpdate, onRemo
               ✕
             </button>
           </div>
+          {/* 직접 링크를 못 찾은 플랫폼(예: 네이버시리즈)은 검색 링크로 대체하고 안내 */}
+          {!m.url && (m.platform || originalTitle) && (
+            <p className="text-[10px] text-gray-400 leading-relaxed">
+              직접 링크가 없어요.{' '}
+              <a
+                href={searchUrl(m.platform, originalTitle)}
+                target="_blank"
+                rel="noreferrer"
+                className="text-emerald-600 hover:underline font-medium"
+              >
+                🔍 {m.platform || '이 플랫폼'}에서 검색
+              </a>
+              해서 작품 페이지 URL을 찾아 위 칸에 붙여넣으세요.
+            </p>
+          )}
           <div className="flex gap-1.5">
             <label className="flex-1">
               <span className="block text-[9px] font-medium text-gray-400 mb-0.5">조회수</span>

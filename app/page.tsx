@@ -306,6 +306,18 @@ export default function Home() {
             value: rows.length > 0 ? rows.join('\n') : '확인 필요 (플랫폼 수치 미수집)',
           });
         }
+        // 독자 반응 섹션엔 감정 비율(도넛 차트 데이터)을 텍스트로도 남김 — 내보내기에서 사라지지 않도록
+        if (s.groups.some((g) => g.label === '독자 반응 분석') && research.sentiment) {
+          const { positive, negative, neutral } = research.sentiment;
+          const total = positive + negative + neutral;
+          if (total > 0) {
+            const pct = (n: number) => Math.round((n / total) * 100);
+            fields.unshift({
+              label: '독자 감정 비율',
+              value: `긍정 ${pct(positive)}% · 부정 ${pct(negative)}% · 중립 ${pct(neutral)}%`,
+            });
+          }
+        }
         if (fields.length > 0) sections.push({ heading: s.heading, fields });
       }
     }
@@ -324,10 +336,44 @@ export default function Home() {
     a.click(); URL.revokeObjectURL(a.href);
   }
 
+  // PDF 내보내기용 감정 비율 도넛 SVG (화면 컴포넌트와 동일한 stroke-dasharray 방식)
+  function sentimentDonutSvgForExport(): string {
+    const s = research.sentiment;
+    if (!s) return '';
+    const total = s.positive + s.negative + s.neutral;
+    if (total <= 0) return '';
+    const segs = [
+      { label: '긍정', value: s.positive, color: '#10b981' },
+      { label: '부정', value: s.negative, color: '#f43f5e' },
+      { label: '중립', value: s.neutral, color: '#9ca3af' },
+    ];
+    const r = 42, c = 2 * Math.PI * r;
+    let offset = 0;
+    const arcs = segs.map((seg) => {
+      const dash = (seg.value / total) * c;
+      const el = `<circle cx="56" cy="56" r="${r}" fill="none" stroke="${seg.color}" stroke-width="14" stroke-dasharray="${dash} ${c - dash}" stroke-dashoffset="${-offset}" transform="rotate(-90 56 56)" />`;
+      offset += dash;
+      return el;
+    }).join('');
+    const legend = segs.map((seg) =>
+      `<div style="display:flex; align-items:center; gap:6px; font-size:12px; margin:3px 0;"><span style="width:11px; height:11px; background:${seg.color}; display:inline-block; border-radius:2px;"></span><span style="width:32px;">${seg.label}</span><b>${Math.round((seg.value / total) * 100)}%</b></div>`
+    ).join('');
+    return `
+      <h2 style="font-size:13px; margin:24px 0 10px; background:#1e3a5f; color:#ffffff; padding:7px 12px; border-left:4px solid #059669;">독자 감정 비율</h2>
+      <div style="display:flex; align-items:center; gap:24px; padding:8px 4px;">
+        <svg width="112" height="112" viewBox="0 0 112 112"><circle cx="56" cy="56" r="${r}" fill="none" stroke="#e5e7eb" stroke-width="14" />${arcs}</svg>
+        <div>${legend}</div>
+      </div>`;
+  }
+
   async function exportAsPdf(sections: ReturnType<typeof buildExportSections>) {
     const { jsPDF } = await import('jspdf');
     const html2canvas = (await import('html2canvas')).default;
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // 연구 데이터가 내보내기 범위에 포함될 때만 도넛 차트도 그린다
+    const includesResearch = sections.some((s) => s.fields.some((f) => f.label === '독자 감정 비율'));
+    const donutHtml = includesResearch ? sentimentDonutSvgForExport() : '';
 
     // 화면 밖에 실제 렌더링해서 캡처 → 인쇄 다이얼로그 없이 바로 PDF 파일로 다운로드
     const container = document.createElement('div');
@@ -339,6 +385,7 @@ export default function Home() {
         <h2 style="font-size:13px; margin:24px 0 10px; background:#1e3a5f; color:#ffffff; padding:7px 12px; border-left:4px solid #059669;">${esc(s.heading)}</h2>
         ${s.fields.map((f) => `<p style="font-size:12px; line-height:1.7; margin:8px 0 12px; white-space:pre-wrap;"><strong style="display:block; color:#1e3a5f; font-size:11px; margin-bottom:2px;">${esc(f.label)}</strong>${esc(f.value)}</p>`).join('')}
       `).join('')}
+      ${donutHtml}
     `;
     document.body.appendChild(container);
 

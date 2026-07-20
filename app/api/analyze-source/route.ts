@@ -75,7 +75,7 @@ const METRICS_PROMPT = `당신은 웹소설/웹툰 플랫폼 페이지에서 복
     { "platform": "플랫폼명 (예: 카카오페이지)", "views": "조회수 (텍스트에 있으면, 예: 4,120만)", "rating": "평점/별점 (텍스트에 있으면, 예: 9.8)" }
   ],
   "overviewPlatforms": "텍스트에서 확인되는 유통 플랫폼 (여러 개면 쉼표로)",
-  "metricsInterpretation": "위 지표의 기획 관점 해석 (지표가 확인된 경우만)",
+  "metricsInterpretation": "조회수·평점 등 지표가 입력에 있으면 그것이 기획에 시사하는 바를 반드시 한두 문장으로 해석 (지표가 하나도 없을 때만 빈 문자열)",
   "reactionPositive": "긍정 반응 키워드/요지 (댓글·리뷰 텍스트가 포함된 경우만)",
   "reactionNegative": "부정 반응 키워드/요지 (댓글·리뷰 텍스트가 포함된 경우만)",
   "sentiment": { "positive": 긍정 비율 정수, "negative": 부정 비율 정수, "neutral": 중립 비율 정수 },

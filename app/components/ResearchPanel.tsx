@@ -267,6 +267,7 @@ function MetricsPasteHelper({
             <p className="text-[10px] font-semibold text-gray-600 mb-2">플랫폼별 지표</p>
             <PlatformMetricsEditor
               metrics={platformMetrics}
+              originalTitle={originalTitle}
               onAdd={onAddMetric}
               onUpdate={onUpdateMetric}
               onRemove={onRemoveMetric}
