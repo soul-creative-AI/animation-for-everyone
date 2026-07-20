@@ -203,7 +203,7 @@ export default function UsageSummary({ userEmail, onClose }: Props) {
                     <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all ${
-                          locked ? 'bg-red-500' : pct >= 70 ? 'bg-amber-400' : 'bg-emerald-400'
+                          locked ? 'bg-red-500' : pct >= 80 ? 'bg-amber-400' : 'bg-emerald-400'
                         }`}
                         style={{ width: `${pct}%` }}
                       />

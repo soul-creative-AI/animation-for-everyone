@@ -6,14 +6,12 @@ import { fmtDate } from '@/lib/project';
 interface Props {
   projects: Project[];
   currentId: string;
-  pct: number;
   onNew: () => void;
   onSelect: (id: string) => void;
   onReorder: (orderedIds: string[]) => void;
-  onShowUsage: () => void;
 }
 
-export default function Sidebar({ projects, currentId, pct, onNew, onSelect, onReorder, onShowUsage }: Props) {
+export default function Sidebar({ projects, currentId, onNew, onSelect, onReorder }: Props) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
@@ -71,19 +69,6 @@ export default function Sidebar({ projects, currentId, pct, onNew, onSelect, onR
             </button>
           </div>
         ))}
-      </div>
-      <div className="px-4 py-4 border-t border-gray-100">
-        <p className="text-[10px] text-gray-400 mb-1.5 font-medium uppercase tracking-wide">기획 완성도</p>
-        <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-          <div className="h-full bg-emerald-400 rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
-        </div>
-        <p className="text-xs text-emerald-600 font-semibold mt-1.5">{pct}%</p>
-        <button
-          onClick={onShowUsage}
-          className="mt-3 w-full text-left text-[11px] text-gray-500 hover:text-emerald-600 transition-colors"
-        >
-          💰 팀 AI 사용량 보기
-        </button>
       </div>
     </aside>
   );

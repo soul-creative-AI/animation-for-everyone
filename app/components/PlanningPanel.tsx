@@ -19,7 +19,7 @@ type FieldConfig = {
   options?: { value: string; label: string }[];
 };
 
-const FIELDS: FieldConfig[] = [
+export const FIELDS: FieldConfig[] = [
   { key: 'title',          label: '제목' },
   { key: 'workType',       label: '작품 유형', type: 'select', options: WORK_TYPE_OPTIONS },
   { key: 'genre',          label: '장르' },
@@ -44,7 +44,7 @@ interface Props {
 
 export default function PlanningPanel({ planning, statuses, onChange, onToggleConfirm }: Props) {
   return (
-    <div className="w-72 flex flex-col bg-white border-l border-gray-200 shrink-0">
+    <div className="w-full h-full flex flex-col bg-white overflow-hidden">
       <div className="px-5 py-4 border-b border-gray-100">
         <h2 className="text-sm font-bold text-gray-800">기획 정보</h2>
         <p className="text-xs text-gray-400 mt-0.5">대화하면 자동으로 채워져요</p>

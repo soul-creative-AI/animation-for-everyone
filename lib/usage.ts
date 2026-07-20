@@ -3,6 +3,7 @@ export interface TokenUsage {
   inputTokens: number;        // 캐시 안 된 입력 토큰 (정가)
   outputTokens: number;       // 출력 토큰
   cachedInputTokens: number;  // 캐시에서 읽은 입력 토큰 (할인가)
+  webSearches?: number;       // 웹 검색 도구 호출 횟수 (Claude web_search 등, $10/1000회)
 }
 
 export const EMPTY_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
@@ -51,11 +52,15 @@ const PRICING: Record<string, { in: number; out: number }> = {
   'gpt-5.6-terra': { in: 3,    out: 15 },
 };
 
+// 웹 검색 도구 단가 (Claude): $10 / 1,000회 검색 = $0.01/회
+const WEB_SEARCH_COST_PER_USE = 0.01;
+
 export function estimateCostUsd(model: string, usage: TokenUsage): number {
   const p = PRICING[model];
-  if (!p) return 0;
+  const searchCost = (usage.webSearches ?? 0) * WEB_SEARCH_COST_PER_USE;
+  if (!p) return searchCost;
   const inCost     = (usage.inputTokens       / 1e6) * p.in;
   const cachedCost = (usage.cachedInputTokens / 1e6) * p.in * 0.1;
   const outCost    = (usage.outputTokens      / 1e6) * p.out;
-  return inCost + cachedCost + outCost;
+  return inCost + cachedCost + outCost + searchCost;
 }

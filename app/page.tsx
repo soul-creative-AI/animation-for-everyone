@@ -3,25 +3,40 @@
 import { useState, useEffect, useRef } from 'react';
 import type {
   Message, PlanningData, PlanningStatuses,
-  ResearchData, ResearchStatuses, ResearchMode,
+  ResearchData, ResearchStatuses, ResearchMode, PlatformMetric,
   ProjectTab, Project, UploadedSource, PendingChange,
 } from '@/types';
 import { defaultPlanningData, defaultResearchData } from '@/types';
-import { PLANNING_FIRST, RESEARCH_FIRST, getMockResearchResponse, getMockProposals } from '@/lib/mock';
+import { PLANNING_FIRST, RESEARCH_FIRST, getMockProposals } from '@/lib/mock';
 import { MODELS, type ModelId } from '@/lib/models';
 import { createProject } from '@/lib/project';
 import { type TokenUsage, estimateCostUsd } from '@/lib/usage';
+import { PROVIDER_OF_MODEL } from '@/lib/budgets';
 import { createClient } from '@/lib/supabase/client';
 import { useProjects } from '@/lib/hooks/useProjects';
+import { useProviderUsage } from '@/lib/hooks/useProviderUsage';
 import Sidebar from './components/Sidebar';
-import AppHeader from './components/AppHeader';
+import AppHeader, { type ExportScope, type ExportFormat } from './components/AppHeader';
 import UsageSummary from './components/UsageSummary';
-import PlanningPanel from './components/PlanningPanel';
-import ResearchPanel from './components/ResearchPanel';
+import PlanningPanel, { FIELDS as PLANNING_FIELDS } from './components/PlanningPanel';
+import ResearchPanel, { RESEARCH_SECTIONS, type DiscoverResult } from './components/ResearchPanel';
 import AttachmentCard from './components/AttachmentCard';
 import ProposalCard from './components/ProposalCard';
 import ChangeProposalCard from './components/ChangeProposalCard';
 import AuthModal from './components/AuthModal';
+
+// 파일을 base64 문자열로 변환 (data: 접두사 제외한 순수 base64)
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.split(',')[1] ?? '');  // "data:application/pdf;base64,XXXX" → "XXXX"
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
 
 // ── 컴포넌트 ───────────────────────────────────────────────────
 export default function Home() {
@@ -34,6 +49,9 @@ export default function Home() {
 
   // Supabase에서 프로젝트 로드
   const { projects, loading: projectsLoading, saveProject, deleteProject, createNewProject, reorderProjects } = useProjects(userId);
+
+  // 프로바이더별 이번 결제 주기 예산 사용률 (모델 드롭다운 경고 표시용)
+  const providerUsagePct = useProviderUsage();
 
   // 현재 프로젝트
   const [currentId, setCurrentId]   = useState('');
@@ -55,7 +73,6 @@ export default function Home() {
   const [researchMode, setResearchMode]          = useState<ResearchMode>('original');
   const [uploadedSources, setUploadedSources]    = useState<UploadedSource[]>([]);
   const [pendingChanges, setPendingChanges]      = useState<PendingChange[]>([]);
-  const [researchTurn, setResearchTurn]          = useState(0);
 
   // UI
   const [input, setInput]         = useState('');
@@ -68,6 +85,28 @@ export default function Home() {
   const [dragOverChat, setDragOverChat] = useState(false);
   const [pendingDropFile, setPendingDropFile] = useState<File | null>(null);
   const [showUsage, setShowUsage] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(288);  // 우측 패널 너비(px) — 드래그로 조절
+
+  // 우측 패널 좌측 경계를 드래그해서 너비 조절 (240~640px)
+  function startPanelResize(e: React.MouseEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = panelWidth;
+    function onMove(ev: MouseEvent) {
+      const next = startWidth + (startX - ev.clientX);  // 왼쪽으로 끌면 넓어짐
+      setPanelWidth(Math.min(640, Math.max(240, next)));
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
 
   const bottomRef   = useRef<HTMLDivElement>(null);
   const modelRef    = useRef<HTMLDivElement>(null);
@@ -135,15 +174,15 @@ export default function Home() {
     setTitle(p.title);
     setTab(p.selectedTab);
     setPlanningMsgs([...p.planningMessages]);
-    setPlanning({ ...p.planning });
+    setPlanning({ ...defaultPlanningData, ...p.planning });
     setPlanningStatuses({ ...p.planningStatuses });
     setResearchMsgs([...p.researchMessages]);
-    setResearch({ ...p.research });
+    // 필드 구조가 바뀌기 전에 저장된 프로젝트도 새 필드가 빈 문자열로 채워지도록 병합
+    setResearch({ ...defaultResearchData, ...p.research });
     setResearchStatuses({ ...p.researchStatuses });
     setResearchMode(p.researchMode);
     setUploadedSources([...p.uploadedSources]);
     setPendingChanges([...p.pendingChanges]);
-    setResearchTurn(0);
     setSaved(true);
   }
 
@@ -217,31 +256,117 @@ export default function Home() {
     }
   }
 
-  function handleExport() {
-    const lines = [`# ${title}`, '', '## 기획 정보', '',
-      ...Object.entries(planning).filter(([, v]) => v).map(([k, v]) => `**${k}**: ${v}`),
-    ];
+  /* ── 내보내기: 범위(리서치/기획/전체) × 형식(TXT/PDF) ── */
+  function buildExportSections(scope: ExportScope) {
+    const sections: { heading: string; fields: { label: string; value: string }[] }[] = [];
+    if (scope === 'planning' || scope === 'all') {
+      sections.push({
+        heading: '기획 정보',
+        fields: PLANNING_FIELDS.filter((f) => planning[f.key]).map((f) => ({ label: f.label, value: planning[f.key] })),
+      });
+    }
+    if (scope === 'research' || scope === 'all') {
+      for (const s of RESEARCH_SECTIONS) {
+        const fields = s.groups
+          .flatMap((g) => g.fields)
+          .map((f) => ({ label: f.label, value: String(research[f.key] ?? '') }))
+          .filter((f) => f.value);
+        // 플랫폼 공식 지표 섹션엔 플랫폼별 지표 표를 앞에 붙임 (없으면 "확인 필요"로 정직하게 표기)
+        if (s.groups.some((g) => g.label === '플랫폼 공식 지표')) {
+          const rows = research.platformMetrics
+            .filter((m) => m.platform || m.views || m.rating || m.url)
+            .map((m) => `${m.platform || '(플랫폼)'}: 조회 ${m.views || '—'} · 평점 ${m.rating || '—'}${m.url ? ` (${m.url})` : ''}`);
+          fields.unshift({
+            label: '플랫폼별 지표',
+            value: rows.length > 0 ? rows.join('\n') : '확인 필요 (플랫폼 수치 미수집)',
+          });
+        }
+        if (fields.length > 0) sections.push({ heading: s.heading, fields });
+      }
+    }
+    return sections;
+  }
+
+  function exportAsTxt(sections: ReturnType<typeof buildExportSections>) {
+    const lines = [`# ${title}`, ''];
+    for (const s of sections) {
+      lines.push(`## ${s.heading}`, '');
+      for (const f of s.fields) lines.push(`**${f.label}**: ${f.value}`);
+      lines.push('');
+    }
     const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
     const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `${title}.txt` });
     a.click(); URL.revokeObjectURL(a.href);
   }
 
+  async function exportAsPdf(sections: ReturnType<typeof buildExportSections>) {
+    const { jsPDF } = await import('jspdf');
+    const html2canvas = (await import('html2canvas')).default;
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // 화면 밖에 실제 렌더링해서 캡처 → 인쇄 다이얼로그 없이 바로 PDF 파일로 다운로드
+    const container = document.createElement('div');
+    container.style.cssText = 'position:fixed; left:-9999px; top:0; width:700px; padding:40px; background:#ffffff; font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif; color:#1f2937;';
+    container.innerHTML = `
+      <h1 style="font-size:20px; margin:0 0 4px; color:#1e3a5f;">${esc(title)}</h1>
+      <p style="font-size:11px; color:#6b7280; margin:0 0 24px;">원작 IP 분석 · 애니메이션 기획 자료</p>
+      ${sections.map((s) => `
+        <h2 style="font-size:13px; margin:24px 0 10px; background:#1e3a5f; color:#ffffff; padding:7px 12px; border-left:4px solid #059669;">${esc(s.heading)}</h2>
+        ${s.fields.map((f) => `<p style="font-size:12px; line-height:1.7; margin:8px 0 12px; white-space:pre-wrap;"><strong style="display:block; color:#1e3a5f; font-size:11px; margin-bottom:2px;">${esc(f.label)}</strong>${esc(f.value)}</p>`).join('')}
+      `).join('')}
+    `;
+    document.body.appendChild(container);
+
+    // jsPDF의 doc.html() 네이티브 텍스트 렌더러는 기본 폰트(Helvetica)가 한글을 지원하지 않아
+    // 한글이 빈칸으로 나온다 — html2canvas로 화면을 그대로 이미지 캡처해서 페이지 단위로 붙여넣는다.
+    const canvas = await html2canvas(container, { backgroundColor: '#ffffff', scale: 2 });
+    document.body.removeChild(container);
+
+    const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+    const pageWidth = 555;   // A4 폭(595pt)에서 좌우 여백 뺀 값
+    const pageHeightPx = (842 / pageWidth) * canvas.width;  // 한 페이지분 캔버스 픽셀 높이
+    let renderedHeight = 0;
+    let first = true;
+    while (renderedHeight < canvas.height) {
+      const sliceHeight = Math.min(pageHeightPx, canvas.height - renderedHeight);
+      const sliceCanvas = document.createElement('canvas');
+      sliceCanvas.width = canvas.width;
+      sliceCanvas.height = sliceHeight;
+      const ctx = sliceCanvas.getContext('2d')!;
+      ctx.drawImage(canvas, 0, renderedHeight, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
+      if (!first) pdf.addPage();
+      const sliceHeightPt = sliceHeight * (pageWidth / canvas.width);
+      pdf.addImage(sliceCanvas.toDataURL('image/png'), 'PNG', 20, 20, pageWidth, sliceHeightPt);
+      renderedHeight += sliceHeight;
+      first = false;
+    }
+    pdf.save(`${title}.pdf`);
+  }
+
+  function handleExport(scope: ExportScope, format: ExportFormat) {
+    const sections = buildExportSections(scope);
+    if (format === 'txt') exportAsTxt(sections);
+    else exportAsPdf(sections);
+  }
+
   /* ── AI 사용량 기록 (usage_logs) ── */
-  async function recordUsage(feature: string, usage?: TokenUsage) {
+  // modelOverride: 서버가 강제/폴백으로 다른 모델을 쓴 경우(예: 자동조사=Claude Haiku) 실제 모델로 기록
+  async function recordUsage(feature: string, usage?: TokenUsage, modelOverride?: ModelId) {
     if (!userId || !usage) return;
     const empty = !usage.inputTokens && !usage.outputTokens && !usage.cachedInputTokens;
     if (empty) return;
+    const usedModel = modelOverride ?? model;
     try {
       await supabase.from('usage_logs').insert({
         user_id: userId,
         user_email: userEmail,
         project_id: currentId || null,
-        model,
+        model: usedModel,
         feature,
         input_tokens: usage.inputTokens,
         output_tokens: usage.outputTokens,
         cached_input_tokens: usage.cachedInputTokens,
-        cost_usd: estimateCostUsd(model, usage),
+        cost_usd: estimateCostUsd(usedModel, usage),
       });
     } catch (e) {
       console.error('사용량 기록 실패:', e);
@@ -280,52 +405,37 @@ export default function Home() {
     }
   }
 
-  /* ── 리서치 탭: mock 전송 ── */
-  function sendResearch(next: Message[]) {
-    const userText = next[next.length - 1].content;
-    const result = getMockResearchResponse(userText, researchTurn);
-    setResearchTurn((t) => t + 1);
-
-    setTimeout(() => {
-      const msgs: Message[] = [];
-
-      // 텍스트 응답
-      if (result.text) msgs.push({ role: 'assistant', content: result.text });
-
-      // 리서치 필드 채우기
-      if (result.extractedResearch) {
+  /* ── 리서치 탭: AI 전송 ── */
+  async function sendResearch(next: Message[]) {
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: next, model, context: 'research' }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      recordUsage('research-chat', data.usage);
+      setResearchMsgs((prev) => [...prev, { role: 'assistant', content: data.text }]);
+      if (data.extracted) {
+        const ext = data.extracted as Record<string, any>;
+        // 사용자가 확정한 필드는 이후 AI 추출로 덮어쓰지 않음
+        const keys = Object.keys(ext).filter((k) => ext[k] && researchStatuses[k as keyof ResearchData] !== 'confirmed');
         setResearch((prev) => {
           const u = { ...prev };
-          for (const [k, v] of Object.entries(result.extractedResearch!) as [keyof ResearchData, string][]) {
-            if (v) u[k] = v;
-          }
+          for (const k of keys) (u as any)[k] = ext[k];
           return u;
         });
         setResearchStatuses((prev) => {
           const s = { ...prev };
-          for (const k of Object.keys(result.extractedResearch!) as (keyof ResearchData)[]) {
-            s[k] = 'inferred';
-          }
+          for (const k of keys) s[k as keyof ResearchData] = 'inferred';
           return s;
         });
       }
-
-      // 변경 제안 카드
-      if (result.pendingChange) {
-        const change = result.pendingChange;
-        msgs.push({ role: 'assistant', content: '', card: { type: 'change-proposal', change } });
-        setPendingChanges((prev) => [...prev, change]);
-      }
-
-      // A/B/C 제안 카드
-      if (result.proposals) {
-        msgs.push({ role: 'assistant', content: '', card: { type: 'proposal', proposals: result.proposals } });
-      }
-
-      setResearchMsgs((prev) => [...prev, ...msgs]);
       setSaved(false);
-      setLoading(false);
-    }, 900);
+    } catch (e: any) {
+      const content = e?.message || '오류가 발생했습니다. 다시 시도해주세요.';
+      setResearchMsgs((prev) => [...prev, { role: 'assistant', content }]);
+    }
   }
 
   /* ── 공통 전송 ── */
@@ -339,10 +449,10 @@ export default function Home() {
     setSaved(false);
     if (tab === 'planning') {
       await sendPlanning(userMsg, next);
-      setLoading(false);
     } else {
-      sendResearch(next);
+      await sendResearch(next);
     }
+    setLoading(false);
   }
 
   /* ── 첨부 처리 ── */
@@ -384,8 +494,10 @@ export default function Home() {
     setResearchMsgs((prev) => [...prev, { role: 'user', content: '', card: { type: 'attachment', source: src } }]);
     setSaved(false);
 
-    // Storage 키에 안전하지 않은 문자([, ], 공백 등)는 밑줄로 치환 (화면 표시용 file.name은 그대로 유지)
-    const safeName = file.name.replace(/[^\p{L}\p{N}._-]/gu, '_');
+    // Storage 키는 ASCII만 허용 — 한글·특수문자는 밑줄로 치환 (화면 표시용 file.name은 그대로 유지)
+    // \w는 [A-Za-z0-9_]라 한글은 매칭 안 됨 → 한글 파일명은 밑줄로 바뀜
+    const safeName = file.name.replace(/[^\w.-]/g, '_').replace(/_+/g, '_');
+    // src.id(UUID) 접두사로 파일명이 밑줄만 남더라도 경로가 겹치지 않게 보장
     const path = `${userId}/${currentId}/${src.id}_${safeName}`;
     const { error } = await supabase.storage.from('research-sources').upload(path, file);
 
@@ -410,26 +522,30 @@ export default function Home() {
       ));
     };
 
-    // 텍스트 계열 파일만 AI 분석 대상 (이미지/PDF 등은 저장만)
+    // 텍스트·PDF만 AI 분석 대상 (이미지 등은 저장만)
     const isTextFile = file.type.startsWith('text/') || /\.(txt|md|markdown|csv)$/i.test(file.name);
-    if (!isTextFile) {
+    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+    if (!isTextFile && !isPdf) {
       setSourceStatus({ uploadStatus: 'done', storagePath: path, analysisStatus: 'done' });
-      setResearchMsgs((prev) => [...prev, { role: 'assistant', content: `"${file.name}" 파일을 저장했어요. (이미지·PDF 등은 자동 분석 대상이 아니라 저장만 했습니다.)` }]);
+      setResearchMsgs((prev) => [...prev, { role: 'assistant', content: `"${file.name}" 파일을 저장했어요. (이미지 등은 자동 분석 대상이 아니라 저장만 했습니다.)` }]);
       return;
     }
 
     setSourceStatus({ uploadStatus: 'done', storagePath: path, analysisStatus: 'analyzing' });
 
-    // 원작 텍스트를 읽어 AI로 각색 리서치 필드 추출
+    // 원작 텍스트/PDF를 읽어 AI로 각색 리서치 필드 추출
     try {
-      const text = await file.text();
+      // PDF는 base64로, 텍스트 파일은 문자열로 서버에 전달
+      const body = isPdf
+        ? { pdfBase64: await fileToBase64(file), fileName: file.name, model }
+        : { text: await file.text(), model };
       const res = await fetch('/api/analyze-source', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, model }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      recordUsage('research-analyze', data.usage);
+      recordUsage('research-analyze', data.usage, data.usedModel as ModelId | undefined);
 
       const ext = (data.extracted ?? {}) as Partial<ResearchData>;
       const keys = (Object.keys(ext) as (keyof ResearchData)[]).filter((k) => ext[k]);
@@ -437,7 +553,7 @@ export default function Home() {
       if (keys.length > 0) {
         setResearch((prev) => {
           const u = { ...prev };
-          for (const k of keys) u[k] = ext[k] as string;
+          for (const k of keys) (u as Record<string, unknown>)[k] = ext[k];
           return u;
         });
         setResearchStatuses((prev) => {
@@ -448,12 +564,36 @@ export default function Home() {
       }
 
       setSourceStatus({ analysisStatus: 'done' });
-      setResearchMsgs((prev) => [...prev, {
-        role: 'assistant',
-        content: keys.length > 0
-          ? `"${file.name}" 원작을 분석해서 오른쪽 리서치 정보를 채웠어요. 확인하고 수정하거나, 더 궁금한 점을 물어봐주세요.`
-          : `"${file.name}"을 읽었는데 각색 리서치 정보를 뽑아내지 못했어요. 파일 내용을 확인해주세요.`,
-      }]);
+
+      if (keys.length > 0) {
+        // 원작 파일로는 알 수 없는 필드(플랫폼 지표·독자 반응·시장 리서치)가 비었으면
+        // 지어내지 않고, 어떻게 채우는지 방법을 안내한다.
+        const filledOrExt = (k: keyof ResearchData) => ext[k] || research[k];
+        const needsPlatformData = !filledOrExt('metricsOfficial') || !filledOrExt('reactionPositive') || !filledOrExt('reactionNegative');
+        const needsMarketResearch = !filledOrExt('similarWorks') || !filledOrExt('genreTrends') || !filledOrExt('differentiation');
+
+        const parts = [`"${file.name}" 원작을 분석해서 오른쪽 리서치 정보를 채웠어요. 확인하고 맞으면 "확정"해주세요.`];
+        if (needsPlatformData || needsMarketResearch) {
+          parts.push('\n아직 비어 있는 항목은 원작 파일만으로는 알 수 없어요. 이렇게 채울 수 있어요:');
+        }
+        if (needsPlatformData) {
+          parts.push(
+            '\n📊 플랫폼 지표·독자 반응 (조회수·평점·댓글)\n'
+            + '  ① 오른쪽 "원작명"을 확인하고 그 아래 🔍 "AI로 자동 조사하기"를 누르면 게재 플랫폼을 찾아드려요.\n'
+            + '  ② 카카오페이지·문피아·리디 등 작품 페이지를 열어 조회수·평점·별점, 그리고 댓글/리뷰를 드래그해 복사하세요.\n'
+            + '  ③ 🔗 "플랫폼 데이터 가져오기 도우미"에 붙여넣고 "분석해서 채우기"를 누르면 지표·긍정/부정 반응으로 정리해드려요. (숫자는 제가 만들지 않고 붙여주신 것만 정리해요)'
+          );
+        }
+        if (needsMarketResearch) {
+          parts.push('\n🔍 유사 작품·장르 트렌드·차별화 포인트\n  채팅으로 "유사작이랑 차별화 포인트 분석해줘"라고 말씀해주시면 제가 정리해드릴게요.');
+        }
+        setResearchMsgs((prev) => [...prev, { role: 'assistant', content: parts.join('\n') }]);
+      } else {
+        setResearchMsgs((prev) => [...prev, {
+          role: 'assistant',
+          content: `"${file.name}"을 읽었는데 각색 리서치 정보를 뽑아내지 못했어요. 파일 내용을 확인해주세요.`,
+        }]);
+      }
     } catch (e: any) {
       console.error('원작 분석 실패:', e);
       setSourceStatus({ analysisStatus: 'error' });
@@ -546,14 +686,184 @@ export default function Home() {
     setSaved(false);
   }
 
-  // episodeCount, runtime 제외한 필드 기준 완성도 계산
-  const COMPLETION_KEYS: (keyof PlanningData)[] =
-    ['title', 'workType', 'genre', 'tone', 'logline', 'theme', 'synopsis', 'visualStyle', 'targetAudience', 'protagonist', 'keyCharacters'];
-  const filledCount = COMPLETION_KEYS.filter((k) => {
-    const v = planning[k];
-    return v && v !== 'undecided';
-  }).length;
-  const pct = Math.round(filledCount / COMPLETION_KEYS.length * 100);
+  /* ── 플랫폼별 지표(조회수·평점) 행 추가/수정/삭제 ── */
+  function addPlatformMetric() {
+    setResearch((prev) => ({
+      ...prev,
+      platformMetrics: [...prev.platformMetrics, { id: crypto.randomUUID(), platform: '', url: '', views: '', rating: '', comments: '' }],
+    }));
+    setSaved(false);
+  }
+
+  function updatePlatformMetric(id: string, patch: Partial<PlatformMetric>) {
+    setResearch((prev) => ({
+      ...prev,
+      platformMetrics: prev.platformMetrics.map((m) => (m.id === id ? { ...m, ...patch } : m)),
+    }));
+    setSaved(false);
+  }
+
+  function removePlatformMetric(id: string) {
+    setResearch((prev) => ({
+      ...prev,
+      platformMetrics: prev.platformMetrics.filter((m) => m.id !== id),
+    }));
+    setSaved(false);
+  }
+
+  /* ── 리서치 → 기획 적용 ──
+     비어있는 기획 필드만 리서치 데이터로 채운다. 사용자가 확정(confirmed)한 필드는 건드리지 않음. */
+  function applyResearchToPlanning() {
+    // 매핑 규칙: [기획 필드, 기획 필드 라벨, 리서치에서 가져올 값(우선순위 순)]
+    const mappings: { key: keyof PlanningData; label: string; value: string }[] = [
+      { key: 'title',          label: '제목',          value: research.originalTitle },
+      { key: 'genre',          label: '장르',          value: research.overviewGenreStatus },
+      { key: 'synopsis',       label: '시놉시스',       value: research.fullPlot || research.overviewPremise },
+      { key: 'targetAudience', label: '타깃 시청자',    value: research.audienceProfile },
+      { key: 'keyCharacters',  label: '주요 등장인물',  value: research.mainCharacters },
+    ];
+    if (researchMode === 'adaptation' && planning.workType === 'undecided') {
+      mappings.push({ key: 'workType', label: '작품 유형', value: 'adaptation' });
+    }
+
+    const applied: string[] = [];
+    const updates: Partial<PlanningData> = {};
+    for (const m of mappings) {
+      const empty = !planning[m.key] || planning[m.key] === 'undecided';
+      if (m.value && empty && planningStatuses[m.key] !== 'confirmed') {
+        (updates as Record<string, string>)[m.key] = m.value;
+        applied.push(m.label);
+      }
+    }
+
+    if (applied.length > 0) {
+      setPlanning((prev) => ({ ...prev, ...updates }));
+      setPlanningStatuses((prev) => {
+        const s = { ...prev };
+        for (const k of Object.keys(updates)) s[k] = 'inferred';
+        return s;
+      });
+    }
+
+    // 기획 시작 가이드 메시지: 무엇이 적용됐는지 + 리서치의 기획 힌트를 함께 전달
+    const guideLines: string[] = [];
+    if (applied.length > 0) {
+      guideLines.push(`리서치 정보를 기획에 반영했어요! (${applied.join(', ')})`);
+      guideLines.push('오른쪽 패널에서 확인하고, 맞는 내용은 확정해주세요.');
+    } else {
+      guideLines.push('기획에 새로 채울 리서치 정보가 없었어요. (이미 채워져 있거나 확정된 필드는 건드리지 않아요)');
+    }
+    if (research.differentiation) guideLines.push(`\n💡 차별화 포인트: ${research.differentiation}`);
+    if (research.planningPoints)  guideLines.push(`\n📌 기획 반영 포인트: ${research.planningPoints}`);
+    guideLines.push('\n이 내용을 바탕으로 기획을 발전시켜볼까요? 장르나 톤부터 같이 정해봐도 좋아요.');
+
+    setPlanningMsgs((prev) => [...prev, { role: 'assistant', content: guideLines.join('\n') }]);
+    setTab('planning');
+    setSaved(false);
+  }
+
+  /* ── 플랫폼 페이지 붙여넣기 → 지표·독자반응 추출 ── */
+  async function analyzePastedMetrics(text: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, model, mode: 'metrics' }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      recordUsage('research-metrics', data.usage, data.usedModel as ModelId | undefined);
+
+      const ext = (data.extracted ?? {}) as Partial<ResearchData> & { platforms?: { platform: string; views?: string; rating?: string }[] };
+      const platforms = (ext.platforms ?? []).filter((p) => p.platform || p.views || p.rating);
+      // platforms는 별도 처리하므로 문자열 필드만 추림
+      const keys = (Object.keys(ext) as (keyof ResearchData)[]).filter((k) => k !== 'platformMetrics' && typeof ext[k] === 'string' && ext[k]);
+
+      if (keys.length === 0 && platforms.length === 0) {
+        alert('붙여넣은 텍스트에서 지표나 독자 반응을 찾지 못했어요. 작품 페이지나 댓글 화면의 내용인지 확인해주세요.');
+        return false;
+      }
+
+      setResearch((prev) => {
+        const u = { ...prev };
+        for (const k of keys) (u as Record<string, unknown>)[k] = ext[k];
+        // 추출한 플랫폼 지표는 기존 행에 이어 붙임 (같은 플랫폼명이면 값 갱신)
+        if (platforms.length > 0) {
+          const rows = [...prev.platformMetrics];
+          for (const p of platforms) {
+            const existing = rows.find((r) => r.platform && r.platform === p.platform);
+            if (existing) {
+              if (p.views) existing.views = p.views;
+              if (p.rating) existing.rating = p.rating;
+            } else {
+              rows.push({ id: crypto.randomUUID(), platform: p.platform ?? '', url: '', views: p.views ?? '', rating: p.rating ?? '', comments: '' });
+            }
+          }
+          u.platformMetrics = rows;
+        }
+        return u;
+      });
+      setResearchStatuses((prev) => {
+        const s = { ...prev };
+        for (const k of keys) s[k] = 'inferred';
+        return s;
+      });
+      setSaved(false);
+      return true;
+    } catch (e: any) {
+      alert(e?.message || '분석 중 오류가 발생했어요. 다시 시도해주세요.');
+      return false;
+    }
+  }
+
+  /* ── 원작명으로 웹 검색해서 게재 플랫폼·개요 필드를 자동으로 찾아 채움 (항상 Claude Haiku + 웹 검색 사용) ── */
+  async function discoverFromTitle(title: string): Promise<DiscoverResult | null> {
+    try {
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: title, mode: 'discover' }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      recordUsage('research-discover', data.usage, data.usedModel as ModelId | undefined);
+      const result = data.discover as DiscoverResult;
+
+      // 이미 값이 있는 필드는 덮어쓰지 않음 (사용자가 입력했거나 이전에 채운 값 보호)
+      const fillable = (Object.entries(result.fields ?? {}) as [keyof ResearchData, string][])
+        .filter(([k, v]) => v && !research[k]);
+      // 찾은 플랫폼(이름+링크)을 지표 행으로 자동 생성 — 조회수·평점은 빈 칸(사용자가 채움)
+      const foundPlatforms = (result.platforms ?? []).filter((p) => p.platform);
+
+      if (fillable.length > 0 || foundPlatforms.length > 0) {
+        setResearch((prev) => {
+          const u = { ...prev };
+          for (const [k, v] of fillable) (u as Record<string, unknown>)[k] = v;
+          if (foundPlatforms.length > 0) {
+            const rows = [...prev.platformMetrics];
+            for (const p of foundPlatforms) {
+              const existing = rows.find((r) => r.platform && r.platform === p.platform);
+              if (existing) {
+                if (p.url && !existing.url) existing.url = p.url;  // 링크만 보강
+              } else {
+                rows.push({ id: crypto.randomUUID(), platform: p.platform, url: p.url ?? '', views: '', rating: '', comments: '' });
+              }
+            }
+            u.platformMetrics = rows;
+          }
+          return u;
+        });
+        setResearchStatuses((prev) => {
+          const s = { ...prev };
+          for (const [k] of fillable) s[k] = 'inferred';
+          return s;
+        });
+        setSaved(false);
+      }
+      return result;
+    } catch (e: any) {
+      alert(e?.message || '검색 중 오류가 발생했어요. 다시 시도해주세요.');
+      return null;
+    }
+  }
 
   // 로그아웃 핸들러
   async function handleLogout() {
@@ -591,11 +901,9 @@ export default function Home() {
       <Sidebar
         projects={projects}
         currentId={currentId}
-        pct={pct}
         onNew={handleNew}
         onSelect={selectProject}
         onReorder={handleReorder}
-        onShowUsage={() => setShowUsage(true)}
       />
 
       {/* ── 중앙 + 우측 ── */}
@@ -723,26 +1031,46 @@ export default function Home() {
 
             {/* 입력 영역 */}
             <div className="px-6 py-4 bg-white border-t border-gray-200 shrink-0">
-              {/* 모델 선택 */}
-              <div className="relative mb-2" ref={modelRef}>
-                <button onClick={() => setModelOpen((o) => !o)}
-                  className="flex items-center gap-1.5 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
-                  {MODELS.find((m) => m.id === model)?.label ?? model}
-                  <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform ${modelOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
+              {/* 모델 선택 + 사용량 보기 */}
+              <div className="flex items-center gap-3 mb-2">
+                <div className="relative" ref={modelRef}>
+                  <button onClick={() => setModelOpen((o) => !o)}
+                    className="flex items-center gap-1.5 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
+                    {MODELS.find((m) => m.id === model)?.label ?? model}
+                    <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform ${modelOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  {modelOpen && (
+                    <div className="absolute bottom-full left-0 mb-2 w-60 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-50">
+                      {MODELS.map((m) => {
+                        const pct = providerUsagePct[PROVIDER_OF_MODEL[m.id as ModelId]];
+                        const locked = pct >= 100;
+                        const warn = pct >= 80;
+                        return (
+                          <button key={m.id} onClick={() => { setModel(m.id as ModelId); setModelOpen(false); }}
+                            className={`w-full flex items-center justify-between px-4 py-2.5 text-sm transition-colors ${model === m.id ? 'bg-emerald-50 text-emerald-700 font-semibold' : 'text-gray-700 hover:bg-gray-50'}`}>
+                            <span>{m.label}</span>
+                            {warn ? (
+                              <span className={`text-[10px] font-semibold ${locked ? 'text-red-500' : 'text-amber-600'}`}>
+                                {locked ? '🔒 예산 소진' : '⚠️ 곧 제한될 수 있어요'}
+                              </span>
+                            ) : (
+                              <span className="text-[11px] text-gray-400">{m.desc}</span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => setShowUsage(true)}
+                  className="text-sm text-gray-500 hover:text-emerald-600 transition-colors font-medium"
+                  title="팀 AI 사용량 보기"
+                >
+                  AI 사용량
                 </button>
-                {modelOpen && (
-                  <div className="absolute bottom-full left-0 mb-2 w-52 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-50">
-                    {MODELS.map((m) => (
-                      <button key={m.id} onClick={() => { setModel(m.id as ModelId); setModelOpen(false); }}
-                        className={`w-full flex items-center justify-between px-4 py-2.5 text-sm transition-colors ${model === m.id ? 'bg-emerald-50 text-emerald-700 font-semibold' : 'text-gray-700 hover:bg-gray-50'}`}>
-                        <span>{m.label}</span>
-                        <span className="text-[11px] text-gray-400">{m.desc}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
 
               <div className="flex gap-2 items-end">
@@ -813,21 +1141,36 @@ export default function Home() {
             </div>
           </div>
 
-          {/* 우측 패널 */}
-          {tab === 'planning' ? (
-            <PlanningPanel
-              planning={planning}
-              statuses={planningStatuses}
-              onChange={handlePlanningFieldChange}
-              onToggleConfirm={togglePlanningConfirm}
+          {/* 우측 패널 (좌측 경계를 드래그해서 너비 조절) */}
+          <div className="flex shrink-0 border-l border-gray-200" style={{ width: panelWidth }}>
+            <div
+              onMouseDown={startPanelResize}
+              title="드래그해서 패널 너비 조절"
+              className="w-1.5 shrink-0 cursor-col-resize bg-transparent hover:bg-emerald-300 active:bg-emerald-400 transition-colors"
             />
-          ) : (
-            <ResearchPanel
-              research={research}
-              statuses={researchStatuses}
-              onChange={handleResearchFieldChange}
-            />
-          )}
+            <div className="flex-1 min-w-0">
+              {tab === 'planning' ? (
+                <PlanningPanel
+                  planning={planning}
+                  statuses={planningStatuses}
+                  onChange={handlePlanningFieldChange}
+                  onToggleConfirm={togglePlanningConfirm}
+                />
+              ) : (
+                <ResearchPanel
+                  research={research}
+                  statuses={researchStatuses}
+                  onChange={handleResearchFieldChange}
+                  onAnalyzeMetrics={analyzePastedMetrics}
+                  onDiscover={discoverFromTitle}
+                  onApplyToPlanning={applyResearchToPlanning}
+                  onAddMetric={addPlatformMetric}
+                  onUpdateMetric={updatePlatformMetric}
+                  onRemoveMetric={removePlatformMetric}
+                />
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
