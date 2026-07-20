@@ -2,7 +2,50 @@
 import { useEffect, useState } from 'react';
 import FieldItem from './FieldItem';
 import PlatformMetricsEditor from './PlatformMetricsEditor';
-import type { ResearchData, ResearchStatuses, PlatformMetric } from '@/types';
+import type { ResearchData, ResearchStatuses, PlatformMetric, SentimentBreakdown } from '@/types';
+
+// 독자 감정 비율 도넛 차트 (긍정/부정/중립) — 라이브러리 없이 SVG stroke-dasharray로 그림
+function SentimentDonut({ sentiment }: { sentiment: SentimentBreakdown }) {
+  const total = sentiment.positive + sentiment.negative + sentiment.neutral;
+  if (total <= 0) return null;
+  const segments = [
+    { label: '긍정', value: sentiment.positive, color: '#10b981' },
+    { label: '부정', value: sentiment.negative, color: '#f43f5e' },
+    { label: '중립', value: sentiment.neutral, color: '#9ca3af' },
+  ];
+  const r = 30;                    // 반지름
+  const c = 2 * Math.PI * r;       // 원둘레
+  let offset = 0;                  // 누적 오프셋(원둘레 기준)
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-3 flex items-center gap-4">
+      <svg width="76" height="76" viewBox="0 0 76 76" className="shrink-0 -rotate-90">
+        <circle cx="38" cy="38" r={r} fill="none" stroke="#e5e7eb" strokeWidth="10" />
+        {segments.map((s) => {
+          const frac = s.value / total;
+          const dash = frac * c;
+          const el = (
+            <circle
+              key={s.label}
+              cx="38" cy="38" r={r} fill="none" stroke={s.color} strokeWidth="10"
+              strokeDasharray={`${dash} ${c - dash}`} strokeDashoffset={-offset}
+            />
+          );
+          offset += dash;
+          return el;
+        })}
+      </svg>
+      <div className="space-y-1">
+        {segments.map((s) => (
+          <div key={s.label} className="flex items-center gap-1.5 text-[11px] text-gray-600">
+            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: s.color }} />
+            <span className="w-6">{s.label}</span>
+            <span className="font-semibold text-gray-800">{Math.round((s.value / total) * 100)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export interface ResearchFieldGroup {
   label?: string;   // 큰 섹션 안에서 구간을 나눌 때 쓰는 소제목 (선택)
@@ -289,6 +332,9 @@ export default function ResearchPanel({ research, statuses, onChange, onAnalyzeM
                       onUpdateMetric={onUpdateMetric}
                       onRemoveMetric={onRemoveMetric}
                     />
+                  )}
+                  {group.label === '독자 반응 분석' && research.sentiment && (
+                    <SentimentDonut sentiment={research.sentiment} />
                   )}
                   {group.fields.map(({ key, label, rows, placeholder }) => (
                     <FieldItem

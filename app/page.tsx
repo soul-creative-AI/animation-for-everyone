@@ -798,10 +798,15 @@ export default function Home() {
 
       const ext = (data.extracted ?? {}) as Partial<ResearchData> & { platforms?: { platform: string; views?: string; rating?: string }[] };
       const platforms = (ext.platforms ?? []).filter((p) => p.platform || p.views || p.rating);
-      // platforms는 별도 처리하므로 문자열 필드만 추림
+      // platforms/sentiment는 별도 처리하므로 문자열 필드만 추림
       const keys = (Object.keys(ext) as (keyof ResearchData)[]).filter((k) => k !== 'platformMetrics' && typeof ext[k] === 'string' && ext[k]);
+      // 감정 비율: 세 값이 숫자이고 합이 0보다 클 때만 유효로 인정
+      const s = ext.sentiment;
+      const validSentiment =
+        s && typeof s.positive === 'number' && typeof s.negative === 'number' && typeof s.neutral === 'number' &&
+        (s.positive + s.negative + s.neutral) > 0 ? s : null;
 
-      if (keys.length === 0 && platforms.length === 0) {
+      if (keys.length === 0 && platforms.length === 0 && !validSentiment) {
         alert('붙여넣은 텍스트에서 지표나 독자 반응을 찾지 못했어요. 작품 페이지나 댓글 화면의 내용인지 확인해주세요.');
         return false;
       }
@@ -809,6 +814,7 @@ export default function Home() {
       setResearch((prev) => {
         const u = { ...prev };
         for (const k of keys) (u as Record<string, unknown>)[k] = ext[k];
+        if (validSentiment) u.sentiment = validSentiment;
         // 추출한 플랫폼 지표는 기존 행에 이어 붙임 (같은 플랫폼명이면 값 갱신)
         if (platforms.length > 0) {
           const rows = [...prev.platformMetrics];

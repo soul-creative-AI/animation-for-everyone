@@ -78,10 +78,12 @@ const METRICS_PROMPT = `당신은 웹소설/웹툰 플랫폼 페이지에서 복
   "metricsInterpretation": "위 지표의 기획 관점 해석 (지표가 확인된 경우만)",
   "reactionPositive": "긍정 반응 키워드/요지 (댓글·리뷰 텍스트가 포함된 경우만)",
   "reactionNegative": "부정 반응 키워드/요지 (댓글·리뷰 텍스트가 포함된 경우만)",
+  "sentiment": { "positive": 긍정 비율 정수, "negative": 부정 비율 정수, "neutral": 중립 비율 정수 },
   "audienceProfile": "독자층 추정과 그 근거 (텍스트에서 관찰되는 신호만)"
 }
 \`\`\`
-platforms 배열은 텍스트에서 확인되는 플랫폼만 넣고, 조회수·평점이 없으면 해당 값은 빈 문자열("")로 두세요. 지표가 전혀 없으면 빈 배열([])로 두세요.`;
+platforms 배열은 텍스트에서 확인되는 플랫폼만 넣고, 조회수·평점이 없으면 해당 값은 빈 문자열("")로 두세요. 지표가 전혀 없으면 빈 배열([])로 두세요.
+sentiment는 붙여넣은 댓글·리뷰의 전반적 정서를 긍정/부정/중립 백분율로 나눈 값입니다. 세 값의 합은 반드시 100이어야 합니다. 댓글·리뷰가 전혀 없어 판단이 불가능하면 sentiment는 null로 두세요.`;
 
 const METRICS_USER_PREFIX = '아래는 플랫폼 페이지에서 복사한 텍스트입니다. 실제로 적혀 있는 지표와 독자 반응만 JSON으로 추출해주세요:\n\n';
 
@@ -317,8 +319,16 @@ export async function POST(req: NextRequest) {
     // 모델 과부하(503/429)는 재시도해도 실패한 경우 — 사용자에게 "잠시 후/다른 모델" 안내
     if (isOverloadError(e)) {
       return NextResponse.json(
-        { error: '지금 AI 모델이 혼잡해서 분석에 실패했어요. 잠시 후 다시 시도하거나, 모델 선택에서 다른 모델(예: Claude)로 바꿔보세요.' },
+        { error: '지금 AI 모델이 혼잡해서 분석에 실패했어요. 잠시 후 다시 시도하거나, 모델 선택에서 다른 모델로 바꿔보세요.' },
         { status: 503 },
+      );
+    }
+    // Claude API는 PDF를 100페이지까지만 받는다 — 사용자가 원인을 알 수 있도록 구체적으로 안내
+    const message = (e as { message?: string })?.message ?? '';
+    if (message.includes('PDF pages')) {
+      return NextResponse.json(
+        { error: 'Claude는 PDF를 100페이지까지만 분석할 수 있어요. Gemini로 바꾸거나, 파일을 100페이지 이하로 나눠서 업로드해주세요.' },
+        { status: 400 },
       );
     }
     return NextResponse.json({ error: '분석 중 오류가 발생했습니다.' }, { status: 500 });
