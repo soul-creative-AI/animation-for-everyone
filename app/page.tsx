@@ -335,8 +335,10 @@ export default function Home() {
     document.body.removeChild(container);
 
     const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
-    const pageWidth = 555;   // A4 폭(595pt)에서 좌우 여백 뺀 값
-    const pageHeightPx = (842 / pageWidth) * canvas.width;  // 한 페이지분 캔버스 픽셀 높이
+    const pageWidth = 555;    // A4 폭(595pt)에서 좌우 여백(20pt×2) 뺀 값
+    const pageHeightPt = 802; // A4 높이(842pt)에서 상하 여백(20pt×2) 뺀 값
+    // canvas.width 기준으로 한 페이지분 캔버스 픽셀 높이 계산 (margin 제외)
+    const pageHeightPx = (pageHeightPt / pageWidth) * canvas.width;
     let renderedHeight = 0;
     let first = true;
     while (renderedHeight < canvas.height) {
