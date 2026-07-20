@@ -9,7 +9,7 @@ import type {
 import { defaultPlanningData, defaultResearchData } from '@/types';
 import { PLANNING_FIRST, RESEARCH_FIRST, getMockProposals } from '@/lib/mock';
 import { MODELS, type ModelId } from '@/lib/models';
-import { createProject } from '@/lib/project';
+import { createProject, duplicateProject } from '@/lib/project';
 import { type TokenUsage, estimateCostUsd } from '@/lib/usage';
 import { PROVIDER_OF_MODEL } from '@/lib/budgets';
 import { createClient } from '@/lib/supabase/client';
@@ -237,6 +237,19 @@ export default function Home() {
     } catch (e) {
       console.error('Save failed:', e);
       alert('저장에 실패했습니다');
+    }
+  }
+
+  async function handleDuplicate(id: string) {
+    const src = projects.find((p) => p.id === id);
+    if (!src) return;
+    const copy = duplicateProject(src);
+    try {
+      await createNewProject(copy);
+      applyProject(copy);
+    } catch (e) {
+      console.error('Duplicate failed:', e);
+      alert('프로젝트 복제에 실패했습니다');
     }
   }
 
@@ -933,6 +946,7 @@ export default function Home() {
         onNew={handleNew}
         onSelect={selectProject}
         onReorder={handleReorder}
+        onDuplicate={handleDuplicate}
       />
 
       {/* ── 중앙 + 우측 ── */}

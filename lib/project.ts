@@ -84,6 +84,22 @@ export function createProject(): Project {
   };
 }
 
+// ── 프로젝트 복제 ─────────────────────────────────────────────
+// 기존 프로젝트를 깊은 복사해서 새 id·제목("… (사본)")·타임스탬프로 만든다.
+export function duplicateProject(src: Project): Project {
+  const now = new Date().toISOString();
+  // 구조가 중첩된 객체·배열이라 JSON 깊은 복사로 원본과 참조를 완전히 끊는다
+  const clone = JSON.parse(JSON.stringify(src)) as Project;
+  return {
+    ...clone,
+    id: crypto.randomUUID(),
+    title: `${src.title} (사본)`,
+    createdAt: now,
+    updatedAt: now,
+    sortOrder: 0, // saveProject에서 맨 뒤 순서로 재배정됨
+  };
+}
+
 // ── 사이드바 날짜 표기 (M/D HH:MM) ────────────────────────────
 export function fmtDate(iso: string) {
   const d = new Date(iso);
