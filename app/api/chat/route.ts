@@ -139,16 +139,44 @@ async function callOpenAI(messages: Message[], modelId: string, systemPrompt: st
   return { text: response.choices[0].message.content ?? '', usage: openaiUsage(response.usage) };
 }
 
+// planning/research 상태 객체에서 채워진 필드만 뽑아 "현재까지 파악된 정보" 텍스트로 정리
+function summarizeContext(data?: Record<string, unknown>): string {
+  if (!data) return '';
+  const lines = Object.entries(data)
+    .filter(([, v]) => typeof v === 'string' && v.trim())
+    .map(([k, v]) => `- ${k}: ${v}`);
+  return lines.join('\n');
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const { messages, model = 'gemini', context = 'planning' }: { messages: Message[]; model?: ModelId; context?: ChatContext } = await req.json();
+    const {
+      messages, model = 'gemini', context = 'planning', planningData, researchData,
+    }: {
+      messages: Message[]; model?: ModelId; context?: ChatContext;
+      planningData?: Partial<PlanningData>; researchData?: Partial<ResearchData>;
+    } = await req.json();
 
     const lock = await checkBudgetLock(model);
     if (lock?.locked) {
       return NextResponse.json({ error: budgetLockMessage(lock) }, { status: 402 });
     }
 
-    const systemPrompt = context === 'research' ? RESEARCH_SYSTEM_PROMPT : PLANNING_SYSTEM_PROMPT;
+    // 기획 탭은 리서치+기획 데이터를, 리서치 탭은 리서치 데이터를 근거로 답하도록 컨텍스트 주입
+    const planningCtx = summarizeContext(planningData);
+    const researchCtx = summarizeContext(researchData);
+    let contextBlock = '';
+    if (context === 'planning') {
+      if (researchCtx) contextBlock += `\n\n[리서치에서 파악된 정보]\n${researchCtx}`;
+      if (planningCtx) contextBlock += `\n\n[현재까지 채워진 기획 정보]\n${planningCtx}`;
+    } else {
+      if (researchCtx) contextBlock += `\n\n[현재까지 채워진 리서치 정보]\n${researchCtx}`;
+    }
+    if (contextBlock) {
+      contextBlock = `\n\n아래는 이 작품에 대해 이미 파악된 정보입니다. 추천·제안을 할 때 이 정보에 맞게 구체적으로 답하세요 (일반론 금지).${contextBlock}`;
+    }
+
+    const systemPrompt = (context === 'research' ? RESEARCH_SYSTEM_PROMPT : PLANNING_SYSTEM_PROMPT) + contextBlock;
 
     let result: AiResult = { text: '', usage: EMPTY_USAGE };
 

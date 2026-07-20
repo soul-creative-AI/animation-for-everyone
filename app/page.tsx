@@ -19,6 +19,7 @@ import Sidebar from './components/Sidebar';
 import AppHeader, { type ExportScope, type ExportFormat } from './components/AppHeader';
 import UsageSummary from './components/UsageSummary';
 import PlanningPanel, { FIELDS as PLANNING_FIELDS } from './components/PlanningPanel';
+import type { WorkType } from '@/types';
 import ResearchPanel, { RESEARCH_SECTIONS, type DiscoverResult } from './components/ResearchPanel';
 import AttachmentCard from './components/AttachmentCard';
 import ProposalCard from './components/ProposalCard';
@@ -259,10 +260,21 @@ export default function Home() {
   /* ── 내보내기: 범위(리서치/기획/전체) × 형식(TXT/PDF) ── */
   function buildExportSections(scope: ExportScope) {
     const sections: { heading: string; fields: { label: string; value: string }[] }[] = [];
+    // 작품 유형: value(adaptation) → label(원작 각색) 변환용
+    const workTypeLabels: Record<WorkType, string> = {
+      'undecided': '미정',
+      'original': '오리지널',
+      'adaptation': '원작 각색',
+      'series': '시리즈물',
+      'feature': '장편(극장판)',
+    };
     if (scope === 'planning' || scope === 'all') {
       sections.push({
         heading: '기획 정보',
-        fields: PLANNING_FIELDS.filter((f) => planning[f.key]).map((f) => ({ label: f.label, value: planning[f.key] })),
+        fields: PLANNING_FIELDS.filter((f) => planning[f.key]).map((f) => ({
+          label: f.label,
+          value: f.key === 'workType' ? workTypeLabels[planning.workType as WorkType] : planning[f.key],
+        })),
       });
     }
     if (scope === 'research' || scope === 'all') {
@@ -378,7 +390,7 @@ export default function Home() {
     try {
       const res  = await fetch('/api/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next, model }),
+        body: JSON.stringify({ messages: next, model, planningData: planning, researchData: research }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -410,7 +422,7 @@ export default function Home() {
     try {
       const res = await fetch('/api/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next, model, context: 'research' }),
+        body: JSON.stringify({ messages: next, model, context: 'research', researchData: research }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -439,12 +451,12 @@ export default function Home() {
   }
 
   /* ── 공통 전송 ── */
-  async function send() {
-    if (!input.trim() || loading) return;
-    const userMsg: Message = { role: 'user', content: input.trim() };
+  // text를 그대로 사용자 메시지로 보냄 (자유입력·퀵액션 버튼 공용)
+  async function sendMessageText(text: string) {
+    if (!text.trim() || loading) return;
+    const userMsg: Message = { role: 'user', content: text.trim() };
     const next = [...messages, userMsg];
     setMessages(next);
-    setInput('');
     setLoading(true);
     setSaved(false);
     if (tab === 'planning') {
@@ -453,6 +465,13 @@ export default function Home() {
       await sendResearch(next);
     }
     setLoading(false);
+  }
+
+  async function send() {
+    if (!input.trim() || loading) return;
+    const text = input;
+    setInput('');
+    await sendMessageText(text);
   }
 
   /* ── 첨부 처리 ── */
@@ -722,10 +741,6 @@ export default function Home() {
       { key: 'targetAudience', label: '타깃 시청자',    value: research.audienceProfile },
       { key: 'keyCharacters',  label: '주요 등장인물',  value: research.mainCharacters },
     ];
-    if (researchMode === 'adaptation' && planning.workType === 'undecided') {
-      mappings.push({ key: 'workType', label: '작품 유형', value: 'adaptation' });
-    }
-
     const applied: string[] = [];
     const updates: Partial<PlanningData> = {};
     for (const m of mappings) {
@@ -734,6 +749,12 @@ export default function Home() {
         (updates as Record<string, string>)[m.key] = m.value;
         applied.push(m.label);
       }
+    }
+    // 작품 유형은 다른 필드와 달리 "값이 비어있는지"가 아니라 "사용자가 확정했는지"만 본다 —
+    // 리서치 탭에서 각색으로 진행 중인데 기획 채팅에서 AI가 추론만 해둔 'original'을 덮어쓰지 못하던 문제 수정
+    if (researchMode === 'adaptation' && planning.workType !== 'adaptation' && planningStatuses.workType !== 'confirmed') {
+      updates.workType = 'adaptation';
+      applied.push('작품 유형');
     }
 
     if (applied.length > 0) {
