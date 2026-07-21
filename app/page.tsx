@@ -506,10 +506,55 @@ export default function Home() {
         });
       }
       setSaved(false);
+
+      // "○○ 리서치해줘"처럼 원작 자동조사를 요청받았으면, 이어서 웹 검색으로 필드를 채운다.
+      if (data.action?.type === 'discover' && data.action.title) {
+        await runChatDiscover(data.action.title);
+      }
     } catch (e: any) {
       const content = e?.message || '오류가 발생했습니다. 다시 시도해주세요.';
       setResearchMsgs((prev) => [...prev, { role: 'assistant', content }]);
     }
+  }
+
+  /* ── 채팅에서 촉발된 자동조사: 웹 검색으로 개요·줄거리 등을 채우고 결과를 채팅에 요약 ── */
+  async function runChatDiscover(rawTitle: string) {
+    const title = rawTitle.trim();
+    if (!title) return;
+    // 각색 작품으로 조사 중이라는 맥락 반영 + 원작명 확정
+    setResearchMode('adaptation');
+    setResearch((prev) => (prev.originalTitle ? prev : { ...prev, originalTitle: title }));
+
+    const result = await discoverFromTitle(title);
+    if (!result) return;  // discoverFromTitle이 이미 오류 alert 처리
+
+    if (!result.found) {
+      setResearchMsgs((prev) => [...prev, {
+        role: 'assistant',
+        content: `「${title}」을(를) 웹에서 찾지 못했어요. ${result.note || ''}\n제목이 정확한지 확인하거나, 원작 파일을 첨부해주시면 제가 직접 분석해서 채워드릴게요.`.trim(),
+      }]);
+      return;
+    }
+
+    // 채운 필드를 라벨로 정리해서 무엇이 반영됐는지 알려준다
+    const FIELD_LABELS: Partial<Record<keyof ResearchData, string>> = {
+      overviewAuthor: '작가', originalFormat: '원작 형식', overviewGenreStatus: '장르/연재 상태',
+      overviewPlatforms: '유통 플랫폼', overviewPremise: '핵심 설정', fullPlot: '전체 줄거리',
+      mainCharacters: '주요 캐릭터', similarWorks: '유사 작품', genreTrends: '장르 트렌드',
+      differentiation: '차별화 포인트',
+    };
+    const filled = (Object.keys(result.fields ?? {}) as (keyof ResearchData)[])
+      .filter((k) => result.fields[k] && FIELD_LABELS[k])
+      .map((k) => FIELD_LABELS[k]!);
+    const platformNames = (result.platforms ?? []).filter((p) => p.platform).map((p) => p.platform);
+
+    const parts = [`「${title}」을(를) 웹에서 찾아 오른쪽 리서치 정보를 채웠어요. 확인하고 맞으면 각 필드를 "확정"해주세요.`];
+    if (filled.length > 0) parts.push(`\n✅ 채운 항목: ${filled.join(', ')}`);
+    if (platformNames.length > 0) parts.push(`🔗 확인된 게재 플랫폼: ${platformNames.join(', ')}`);
+    parts.push(
+      '\n아직 비어 있는 조회수·평점·독자 반응은 제가 지어내지 않아요. 위 플랫폼 페이지에서 수치와 댓글을 복사해 🔗 "플랫폼 데이터 가져오기 도우미"에 붙여넣으면 정리해드릴게요.'
+    );
+    setResearchMsgs((prev) => [...prev, { role: 'assistant', content: parts.join('\n') }]);
   }
 
   /* ── 공통 전송 ── */
