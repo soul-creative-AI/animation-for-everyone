@@ -1,5 +1,5 @@
 import type { Project, PlanningData, WorkType } from '@/types';
-import { defaultPlanningData, defaultResearchData } from '@/types';
+import { defaultPlanningData, defaultResearchData, defaultArchive } from '@/types';
 import { PLANNING_FIRST, RESEARCH_FIRST } from '@/lib/mock';
 
 // ── 구버전 데이터 마이그레이션 ─────────────────────────────────
@@ -62,6 +62,7 @@ export function migrateProject(raw: any): Project {
     researchMode:   raw.researchMode   ?? 'original',
     uploadedSources: raw.uploadedSources ?? [],
     pendingChanges: raw.pendingChanges  ?? [],
+    archive:        raw.archive        ?? { volumes: [] },
   };
 }
 
@@ -81,6 +82,7 @@ export function createProject(): Project {
     researchMode: 'original',
     uploadedSources: [],
     pendingChanges: [],
+    archive: { ...defaultArchive, volumes: [] },
   };
 }
 

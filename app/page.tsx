@@ -5,6 +5,7 @@ import type {
   Message, PlanningData, PlanningStatuses,
   ResearchData, ResearchStatuses, ResearchMode, PlatformMetric,
   ProjectTab, Project, UploadedSource, PendingChange,
+  OriginalArchive, ArchiveVolume, ArchiveChapter,
 } from '@/types';
 import { defaultPlanningData, defaultResearchData } from '@/types';
 import { PLANNING_FIRST, RESEARCH_FIRST, getMockProposals } from '@/lib/mock';
@@ -21,6 +22,7 @@ import UsageSummary from './components/UsageSummary';
 import PlanningPanel, { FIELDS as PLANNING_FIELDS } from './components/PlanningPanel';
 import type { WorkType } from '@/types';
 import ResearchPanel, { RESEARCH_SECTIONS, type DiscoverResult } from './components/ResearchPanel';
+import ArchivePanel from './components/ArchivePanel';
 import AttachmentCard from './components/AttachmentCard';
 import ProposalCard from './components/ProposalCard';
 import ChangeProposalCard from './components/ChangeProposalCard';
@@ -96,6 +98,9 @@ export default function Home() {
   const [researchMode, setResearchMode]          = useState<ResearchMode>('original');
   const [uploadedSources, setUploadedSources]    = useState<UploadedSource[]>([]);
   const [pendingChanges, setPendingChanges]      = useState<PendingChange[]>([]);
+
+  // 원작 아카이브 (권/화별 요약)
+  const [archive, setArchive]                    = useState<OriginalArchive>({ volumes: [] });
 
   // UI
   const [input, setInput]         = useState('');
@@ -189,7 +194,7 @@ export default function Home() {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, planningMsgs, planning, planningStatuses, researchMsgs, research, researchStatuses, researchMode, uploadedSources, pendingChanges]);
+  }, [title, planningMsgs, planning, planningStatuses, researchMsgs, research, researchStatuses, researchMode, uploadedSources, pendingChanges, archive]);
 
   /* ── 프로젝트 로드 ── */
   function applyProject(p: Project) {
@@ -206,6 +211,8 @@ export default function Home() {
     setResearchMode(p.researchMode);
     setUploadedSources([...p.uploadedSources]);
     setPendingChanges([...p.pendingChanges]);
+    // 구버전 프로젝트엔 archive가 없으므로 기본값으로 병합
+    setArchive(p.archive ?? { volumes: [] });
     setSaved(true);
   }
 
@@ -252,6 +259,7 @@ export default function Home() {
       researchMode,
       uploadedSources: [...uploadedSources],
       pendingChanges: [...pendingChanges],
+      archive: { volumes: archive.volumes.map((v) => ({ ...v, chapters: [...v.chapters] })) },
     };
     try {
       await saveProject(updated);
@@ -535,7 +543,7 @@ export default function Home() {
     try {
       const res = await fetch('/api/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next, model, context: 'research', researchData: research }),
+        body: JSON.stringify({ messages: next, model, context: 'research', researchData: research, archiveData: archive }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -888,6 +896,97 @@ export default function Home() {
     setSaved(false);
   }
 
+  /* ── 원작 아카이브: 권/화 추가·수정·삭제 ── */
+  function addArchiveVolume() {
+    setArchive((prev) => ({
+      volumes: [...prev.volumes, { id: crypto.randomUUID(), number: String(prev.volumes.length + 1), title: '', chapters: [] }],
+    }));
+    setSaved(false);
+  }
+
+  function updateArchiveVolume(id: string, patch: Partial<ArchiveVolume>) {
+    setArchive((prev) => ({
+      volumes: prev.volumes.map((v) => (v.id === id ? { ...v, ...patch } : v)),
+    }));
+    setSaved(false);
+  }
+
+  function removeArchiveVolume(id: string) {
+    if (!confirm('이 권과 안에 있는 모든 화를 삭제할까요?')) return;
+    setArchive((prev) => ({ volumes: prev.volumes.filter((v) => v.id !== id) }));
+    setSaved(false);
+  }
+
+  function addArchiveChapter(volumeId: string) {
+    setArchive((prev) => ({
+      volumes: prev.volumes.map((v) =>
+        v.id === volumeId
+          ? { ...v, chapters: [...v.chapters, { id: crypto.randomUUID(), number: String(v.chapters.length + 1), title: '', summary: '', characters: '', sceneTags: '' }] }
+          : v,
+      ),
+    }));
+    setSaved(false);
+  }
+
+  function updateArchiveChapter(volumeId: string, chapterId: string, patch: Partial<ArchiveChapter>) {
+    setArchive((prev) => ({
+      volumes: prev.volumes.map((v) =>
+        v.id === volumeId
+          ? { ...v, chapters: v.chapters.map((c) => (c.id === chapterId ? { ...c, ...patch } : c)) }
+          : v,
+      ),
+    }));
+    setSaved(false);
+  }
+
+  function removeArchiveChapter(volumeId: string, chapterId: string) {
+    setArchive((prev) => ({
+      volumes: prev.volumes.map((v) =>
+        v.id === volumeId ? { ...v, chapters: v.chapters.filter((c) => c.id !== chapterId) } : v,
+      ),
+    }));
+    setSaved(false);
+  }
+
+  // 화 원문을 AI로 요약해서 그 화의 요약·등장인물·장면 태그를 채움
+  async function summarizeArchiveChapter(volumeId: string, chapterId: string, sourceText: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: sourceText, model, mode: 'chapter' }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      recordUsage('archive-chapter', data.usage, data.usedModel as ModelId | undefined);
+
+      const ext = (data.extracted ?? {}) as { title?: string; summary?: string; characters?: string; sceneTags?: string };
+      if (!ext.summary && !ext.characters && !ext.sceneTags && !ext.title) {
+        alert('원문에서 요약할 내용을 찾지 못했어요. 텍스트를 확인해주세요.');
+        return false;
+      }
+      setArchive((prev) => ({
+        volumes: prev.volumes.map((v) =>
+          v.id !== volumeId ? v : {
+            ...v,
+            chapters: v.chapters.map((c) => c.id !== chapterId ? c : {
+              ...c,
+              // 사용자가 이미 입력한 제목은 유지, 비어 있을 때만 AI 제목 사용
+              title: c.title.trim() ? c.title : (ext.title ?? ''),
+              summary: ext.summary ?? c.summary,
+              characters: ext.characters ?? c.characters,
+              sceneTags: ext.sceneTags ?? c.sceneTags,
+            }),
+          },
+        ),
+      }));
+      setSaved(false);
+      return true;
+    } catch (e: any) {
+      alert(e?.message || '요약 중 오류가 발생했어요. 다시 시도해주세요.');
+      return false;
+    }
+  }
+
   /* ── 리서치 → 기획 적용 ──
      비어있는 기획 필드만 리서치 데이터로 채운다. 사용자가 확정(confirmed)한 필드는 건드리지 않음. */
   function applyResearchToPlanning() {
@@ -1110,13 +1209,13 @@ export default function Home() {
 
         {/* 탭 바 */}
         <div className="flex items-center gap-1 px-6 border-b border-gray-200 bg-white shrink-0">
-          {(['research', 'planning'] as ProjectTab[]).map((t) => (
+          {(['research', 'archive', 'planning'] as ProjectTab[]).map((t) => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-4 py-2.5 text-xs font-semibold transition-colors border-b-2 -mb-px ${
                 tab === t ? 'text-emerald-600 border-emerald-500' : 'text-gray-500 border-transparent hover:text-gray-700'
               }`}
             >
-              {t === 'planning' ? '기획' : '리서치'}
+              {t === 'planning' ? '기획' : t === 'archive' ? '원작 아카이브' : '리서치'}
             </button>
           ))}
           {['시리즈 구성', '시나리오'].map((t) => (
@@ -1127,7 +1226,21 @@ export default function Home() {
           ))}
         </div>
 
-        {/* 콘텐츠 영역 (채팅 + 우측 패널) */}
+        {/* 콘텐츠 영역: 아카이브 탭은 전체 폭, 그 외는 채팅 + 우측 패널 */}
+        {tab === 'archive' ? (
+          <div className="flex flex-1 overflow-hidden">
+            <ArchivePanel
+              archive={archive}
+              onAddVolume={addArchiveVolume}
+              onUpdateVolume={updateArchiveVolume}
+              onRemoveVolume={removeArchiveVolume}
+              onAddChapter={addArchiveChapter}
+              onUpdateChapter={updateArchiveChapter}
+              onRemoveChapter={removeArchiveChapter}
+              onSummarizeChapter={summarizeArchiveChapter}
+            />
+          </div>
+        ) : (
         <div className="flex flex-1 overflow-hidden">
 
           {/* 채팅 패널 */}
@@ -1360,6 +1473,7 @@ export default function Home() {
             </div>
           </div>
         </div>
+        )}
       </div>
 
       {/* 팀 AI 사용량 */}

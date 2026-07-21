@@ -2,7 +2,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { NextRequest, NextResponse } from 'next/server';
-import type { Message, PlanningData, ResearchData } from '@/types';
+import type { Message, PlanningData, ResearchData, OriginalArchive } from '@/types';
 import { type TokenUsage, EMPTY_USAGE, claudeUsage, openaiUsage, geminiUsage } from '@/lib/usage';
 import { checkBudgetLock, budgetLockMessage } from '@/lib/budgetGuard';
 
@@ -149,13 +149,34 @@ function summarizeContext(data?: Record<string, unknown>): string {
   return lines.join('\n');
 }
 
+// 원작 아카이브(권/화별 요약)를 "몇 권 몇 화" 질문에 답할 수 있는 인덱스 텍스트로 정리
+function summarizeArchive(archive?: OriginalArchive): string {
+  if (!archive?.volumes?.length) return '';
+  const lines: string[] = [];
+  for (const v of archive.volumes) {
+    const vLabel = `${v.number || '?'}권${v.title ? ` (${v.title})` : ''}`;
+    for (const c of v.chapters ?? []) {
+      if (!c.summary?.trim() && !c.title?.trim()) continue;
+      const parts = [`${vLabel} ${c.number || '?'}화${c.title ? ` 「${c.title}」` : ''}`];
+      if (c.summary?.trim()) parts.push(c.summary.trim());
+      const meta: string[] = [];
+      if (c.characters?.trim()) meta.push(`등장인물: ${c.characters.trim()}`);
+      if (c.sceneTags?.trim()) meta.push(`장면: ${c.sceneTags.trim()}`);
+      if (meta.length) parts.push(`(${meta.join(' / ')})`);
+      lines.push(parts.join(' — '));
+    }
+  }
+  return lines.join('\n');
+}
+
 export async function POST(req: NextRequest) {
   try {
     const {
-      messages, model = 'gemini', context = 'planning', planningData, researchData,
+      messages, model = 'gemini', context = 'planning', planningData, researchData, archiveData,
     }: {
       messages: Message[]; model?: ModelId; context?: ChatContext;
       planningData?: Partial<PlanningData>; researchData?: Partial<ResearchData>;
+      archiveData?: OriginalArchive;
     } = await req.json();
 
     const lock = await checkBudgetLock(model);
@@ -175,6 +196,14 @@ export async function POST(req: NextRequest) {
     }
     if (contextBlock) {
       contextBlock = `\n\n아래는 이 작품에 대해 이미 파악된 정보입니다. 추천·제안을 할 때 이 정보에 맞게 구체적으로 답하세요 (일반론 금지).${contextBlock}`;
+    }
+
+    // 원작 아카이브가 있으면 "몇 화/몇 권" 질문에 근거로 쓰도록 인덱스를 주입 (리서치 탭 한정)
+    if (context === 'research') {
+      const archiveCtx = summarizeArchive(archiveData);
+      if (archiveCtx) {
+        contextBlock += `\n\n[원작 권/화별 요약 인덱스]\n사용자가 "~한 장면 몇 화야?", "○○가 나오는 화는?"처럼 물으면 아래 인덱스에서 찾아 "N권 M화"로 정확히 답하세요. 인덱스에 없으면 모른다고 하세요.\n${archiveCtx}`;
+      }
     }
 
     const systemPrompt = (context === 'research' ? RESEARCH_SYSTEM_PROMPT : PLANNING_SYSTEM_PROMPT) + contextBlock;

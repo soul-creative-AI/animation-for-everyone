@@ -1,5 +1,5 @@
 export type FieldStatus = 'confirmed' | 'inferred' | 'undecided' | 'suggested';
-export type ProjectTab   = 'planning' | 'research';
+export type ProjectTab   = 'planning' | 'research' | 'archive';
 export type ResearchMode = 'original' | 'adaptation';
 
 // ── 메시지 ──────────────────────────────────────────────────
@@ -117,6 +117,30 @@ export const defaultResearchData: ResearchData = {
 
 export type ResearchStatuses = Partial<Record<keyof ResearchData, FieldStatus>>;
 
+// ── 원작 아카이브 (권/화 단위 구조화 요약) ──────────────────────
+// 12권처럼 분량이 큰 원작을 권 → 화 트리로 정리해 검색·발췌·열람에 쓴다.
+export interface ArchiveChapter {
+  id: string;
+  number: string;    // 화 표기 (예: "1", "1화")
+  title: string;
+  summary: string;   // 화 요약
+  characters: string; // 등장인물
+  sceneTags: string;  // 핵심 장면 태그
+}
+
+export interface ArchiveVolume {
+  id: string;
+  number: string;    // 권 표기 (예: "1", "1권")
+  title: string;
+  chapters: ArchiveChapter[];
+}
+
+export interface OriginalArchive {
+  volumes: ArchiveVolume[];
+}
+
+export const defaultArchive: OriginalArchive = { volumes: [] };
+
 // ── 첨부 자료 ─────────────────────────────────────────────────
 export interface UploadedSource {
   id: string;
@@ -170,4 +194,6 @@ export interface Project {
   researchMode: ResearchMode;
   uploadedSources: UploadedSource[];
   pendingChanges: PendingChange[];
+  // 원작 아카이브 (권/화별 요약)
+  archive: OriginalArchive;
 }
