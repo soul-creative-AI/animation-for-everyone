@@ -39,12 +39,21 @@ function AutoSplitBox({ model, onModelChange, onAutoSplit }: {
   const [busy, setBusy] = useState(false);
   const [showPaste, setShowPaste] = useState(false);
   const [pasteText, setPasteText] = useState('');
+  const [dragOver, setDragOver] = useState(false);
 
   async function runFile(file: File) {
     if (busy) return;
     setBusy(true);
     await onAutoSplit({ file });
     setBusy(false);
+  }
+
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    if (busy) return;
+    const file = e.dataTransfer.files?.[0];
+    if (file) runFile(file);
   }
   async function runPaste() {
     if (busy || !pasteText.trim()) return;
@@ -76,9 +85,18 @@ function AutoSplitBox({ model, onModelChange, onAutoSplit }: {
         </select>
       </div>
 
-      {/* 파일 선택 (선택 즉시 자동 실행) */}
-      <label className={`mt-3 flex items-center justify-center gap-2 w-full px-3 py-3 rounded-xl border-2 border-dashed cursor-pointer transition-colors ${busy ? 'border-gray-200 text-gray-300 cursor-not-allowed' : 'border-emerald-300 text-emerald-700 hover:bg-emerald-50'}`}>
-        <span className="text-sm font-semibold">{busy ? '자동 정리 중... (분량에 따라 시간이 걸려요)' : '＋ 원문 파일 선택 (txt · pdf)'}</span>
+      {/* 파일 선택/드롭 (선택·드롭 즉시 자동 실행) */}
+      <label
+        onDragOver={(e) => { if (!busy) { e.preventDefault(); setDragOver(true); } }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        className={`mt-3 flex flex-col items-center justify-center gap-0.5 w-full px-3 py-4 rounded-xl border-2 border-dashed cursor-pointer transition-colors ${
+          busy ? 'border-gray-200 text-gray-300 cursor-not-allowed'
+          : dragOver ? 'border-emerald-500 bg-emerald-100 text-emerald-700'
+          : 'border-emerald-300 text-emerald-700 hover:bg-emerald-50'
+        }`}>
+        <span className="text-sm font-semibold">{busy ? '자동 정리 중... (분량에 따라 시간이 걸려요)' : dragOver ? '여기에 놓으면 정리 시작' : '＋ 원문 파일 선택'}</span>
+        {!busy && <span className="text-[10px] text-gray-400">파일을 끌어다 놓거나 클릭해서 선택 (txt · pdf)</span>}
         <input type="file" accept=".txt,.md,.pdf,text/plain,application/pdf" className="hidden" disabled={busy}
           onChange={(e) => { const f = e.target.files?.[0]; if (f) runFile(f); e.target.value = ''; }} />
       </label>

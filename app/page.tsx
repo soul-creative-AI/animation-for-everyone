@@ -23,7 +23,6 @@ import PlanningPanel, { FIELDS as PLANNING_FIELDS } from './components/PlanningP
 import type { WorkType } from '@/types';
 import ResearchPanel, { RESEARCH_SECTIONS, type DiscoverResult } from './components/ResearchPanel';
 import ArchivePanel from './components/ArchivePanel';
-import AttachmentCard from './components/AttachmentCard';
 import ProposalCard from './components/ProposalCard';
 import ChangeProposalCard from './components/ChangeProposalCard';
 import AuthModal from './components/AuthModal';
@@ -107,9 +106,6 @@ export default function Home() {
   const [loading, setLoading]     = useState(false);
   const [model, setModel]         = useState<ModelId>('gemini');
   const [modelOpen, setModelOpen] = useState(false);
-  const [attachOpen, setAttachOpen] = useState(false);
-  const [attachMode, setAttachMode] = useState<'link' | 'text' | null>(null);
-  const [attachInput, setAttachInput] = useState('');
   const [showUsage, setShowUsage] = useState(false);
   const [panelWidth, setPanelWidth] = useState(288);  // 우측 패널 너비(px) — 드래그로 조절
 
@@ -136,7 +132,6 @@ export default function Home() {
 
   const bottomRef   = useRef<HTMLDivElement>(null);
   const modelRef    = useRef<HTMLDivElement>(null);
-  const attachRef   = useRef<HTMLDivElement>(null);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 현재 탭 메시지
@@ -174,7 +169,6 @@ export default function Home() {
   useEffect(() => {
     const h = (e: MouseEvent) => {
       if (modelRef.current && !modelRef.current.contains(e.target as Node)) setModelOpen(false);
-      if (attachRef.current && !attachRef.current.contains(e.target as Node)) { setAttachOpen(false); setAttachMode(null); }
     };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
@@ -635,41 +629,6 @@ export default function Home() {
     const text = input;
     setInput('');
     await sendMessageText(text);
-  }
-
-  /* ── 첨부 처리 ── */
-  function addSource(type: UploadedSource['type'], name: string) {
-    const src: UploadedSource = {
-      id: crypto.randomUUID(), type, name,
-      uploadStatus: 'uploading', analysisStatus: 'pending',
-    };
-    setUploadedSources((prev) => [...prev, src]);
-    setResearchMsgs((prev) => [...prev, { role: 'user', content: '', card: { type: 'attachment', source: src } }]);
-    setSaved(false);
-
-    // mock: 업로드 → 분석 완료
-    setTimeout(() => {
-      setUploadedSources((prev) => prev.map((s) => s.id === src.id ? { ...s, uploadStatus: 'done', analysisStatus: 'analyzing' } : s));
-      setResearchMsgs((prev) => prev.map((m) =>
-        m.card?.type === 'attachment' && m.card.source.id === src.id
-          ? { ...m, card: { type: 'attachment', source: { ...src, uploadStatus: 'done', analysisStatus: 'analyzing' } } }
-          : m
-      ));
-    }, 800);
-    setTimeout(() => {
-      setUploadedSources((prev) => prev.map((s) => s.id === src.id ? { ...s, analysisStatus: 'done' } : s));
-      setResearchMsgs((prev) => prev.map((m) =>
-        m.card?.type === 'attachment' && m.card.source.id === src.id
-          ? { ...m, card: { type: 'attachment', source: { ...src, uploadStatus: 'done', analysisStatus: 'done' } } }
-          : m
-      ));
-    }, 2000);
-  }
-
-  function submitAttach() {
-    if (!attachInput.trim()) return;
-    addSource(attachMode === 'link' ? 'link' : 'text', attachInput.trim());
-    setAttachInput(''); setAttachMode(null); setAttachOpen(false);
   }
 
   /* ── 기획 변경 적용 ── */
@@ -1135,19 +1094,6 @@ export default function Home() {
             {/* 메시지 목록 */}
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
               {messages.map((m, i) => {
-                if (m.card?.type === 'attachment') {
-                  return (
-                    <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <AttachmentCard
-                        source={m.card.source}
-                        onDelete={(id) => {
-                          setUploadedSources((prev) => prev.filter((s) => s.id !== id));
-                          setResearchMsgs((prev) => prev.filter((_, idx) => idx !== i));
-                        }}
-                      />
-                    </div>
-                  );
-                }
                 if (m.card?.type === 'proposal') {
                   return (
                     <div key={i} className="flex justify-start">
@@ -1250,67 +1196,18 @@ export default function Home() {
               </div>
 
               <div className="flex gap-2 items-end">
-                {/* 첨부 버튼 (리서치 탭만) */}
-                {tab === 'research' && (
-                  <div className="relative" ref={attachRef}>
-                    <button onClick={() => { setAttachOpen((o) => !o); setAttachMode(null); }}
-                      className="w-10 h-10 flex items-center justify-center rounded-xl border border-gray-200 hover:border-emerald-400 text-gray-400 hover:text-emerald-600 transition-colors text-lg font-light bg-white shrink-0">
-                      +
-                    </button>
-                    {attachOpen && (
-                      <div className="absolute bottom-full left-0 mb-2 w-52 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-50">
-                        <button onClick={() => { setAttachMode('link'); setAttachOpen(false); }}
-                          className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2">
-                          <span>🔗</span> 링크 추가
-                        </button>
-                        <button onClick={() => { setAttachMode('text'); setAttachOpen(false); }}
-                          className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2">
-                          <span>📝</span> 텍스트 붙여넣기
-                        </button>
-                        <div className="border-t border-gray-100 px-4 py-2 text-[10px] text-gray-400 leading-relaxed">
-                          📄 원작 파일은 <b>원작 아카이브</b> 탭에서 올리면 화 분할·리서치가 함께 채워져요.
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* 링크/텍스트 입력 모드 */}
-                {attachMode ? (
-                  <div className="flex-1 flex gap-2">
-                    <input
-                      autoFocus
-                      value={attachInput}
-                      onChange={(e) => setAttachInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') submitAttach(); if (e.key === 'Escape') setAttachMode(null); }}
-                      placeholder={attachMode === 'link' ? 'URL을 입력하세요' : '텍스트를 붙여넣으세요'}
-                      className="flex-1 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
-                    />
-                    <button onClick={submitAttach}
-                      className="px-4 py-3 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold rounded-xl transition-colors shrink-0">
-                      추가
-                    </button>
-                    <button onClick={() => { setAttachMode(null); setAttachInput(''); }}
-                      className="px-3 py-3 text-gray-400 hover:text-gray-600 transition-colors">
-                      ✕
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <textarea
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-                      rows={1}
-                      placeholder={tab === 'research' ? '리서치 방향을 입력하세요... (Shift+Enter로 줄바꿈)' : '메시지를 입력하세요... (Shift+Enter로 줄바꿈)'}
-                      className="flex-1 resize-none bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
-                    />
-                    <button onClick={send} disabled={!input.trim() || loading}
-                      className="px-5 py-3 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors shrink-0">
-                      전송
-                    </button>
-                  </>
-                )}
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+                  rows={1}
+                  placeholder={tab === 'research' ? '리서치 방향을 입력하세요... (Shift+Enter로 줄바꿈)' : '메시지를 입력하세요... (Shift+Enter로 줄바꿈)'}
+                  className="flex-1 resize-none bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
+                />
+                <button onClick={send} disabled={!input.trim() || loading}
+                  className="px-5 py-3 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors shrink-0">
+                  전송
+                </button>
               </div>
             </div>
           </div>
