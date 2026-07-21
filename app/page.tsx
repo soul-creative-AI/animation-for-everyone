@@ -110,8 +110,6 @@ export default function Home() {
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachMode, setAttachMode] = useState<'link' | 'text' | null>(null);
   const [attachInput, setAttachInput] = useState('');
-  const [dragOverChat, setDragOverChat] = useState(false);
-  const [pendingDropFile, setPendingDropFile] = useState<File | null>(null);
   const [showUsage, setShowUsage] = useState(false);
   const [panelWidth, setPanelWidth] = useState(288);  // 우측 패널 너비(px) — 드래그로 조절
 
@@ -139,7 +137,6 @@ export default function Home() {
   const bottomRef   = useRef<HTMLDivElement>(null);
   const modelRef    = useRef<HTMLDivElement>(null);
   const attachRef   = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 현재 탭 메시지
@@ -669,149 +666,6 @@ export default function Home() {
     }, 2000);
   }
 
-  /* ── 파일 첨부: Supabase Storage에 실제 업로드 ── */
-  async function uploadFileSource(file: File) {
-    const src: UploadedSource = {
-      id: crypto.randomUUID(), type: 'file', name: file.name,
-      uploadStatus: 'uploading', analysisStatus: 'pending',
-    };
-    setUploadedSources((prev) => [...prev, src]);
-    setResearchMsgs((prev) => [...prev, { role: 'user', content: '', card: { type: 'attachment', source: src } }]);
-    setSaved(false);
-
-    // Storage 키는 ASCII만 허용 — 한글·특수문자는 밑줄로 치환 (화면 표시용 file.name은 그대로 유지)
-    // \w는 [A-Za-z0-9_]라 한글은 매칭 안 됨 → 한글 파일명은 밑줄로 바뀜
-    const safeName = file.name.replace(/[^\w.-]/g, '_').replace(/_+/g, '_');
-    // src.id(UUID) 접두사로 파일명이 밑줄만 남더라도 경로가 겹치지 않게 보장
-    const path = `${userId}/${currentId}/${src.id}_${safeName}`;
-    const { error } = await supabase.storage.from('research-sources').upload(path, file);
-
-    if (error) {
-      console.error('파일 업로드 실패:', error);
-      setUploadedSources((prev) => prev.map((s) => s.id === src.id ? { ...s, uploadStatus: 'error' } : s));
-      setResearchMsgs((prev) => prev.map((m) =>
-        m.card?.type === 'attachment' && m.card.source.id === src.id
-          ? { ...m, card: { type: 'attachment', source: { ...src, uploadStatus: 'error' } } }
-          : m
-      ));
-      return;
-    }
-
-    // 카드 상태 갱신 헬퍼
-    const setSourceStatus = (patch: Partial<UploadedSource>) => {
-      setUploadedSources((prev) => prev.map((s) => s.id === src.id ? { ...s, ...patch } : s));
-      setResearchMsgs((prev) => prev.map((m) =>
-        m.card?.type === 'attachment' && m.card.source.id === src.id
-          ? { ...m, card: { type: 'attachment', source: { ...m.card.source, ...patch } } }
-          : m
-      ));
-    };
-
-    // 텍스트·PDF만 AI 분석 대상 (이미지 등은 저장만)
-    const isTextFile = file.type.startsWith('text/') || /\.(txt|md|markdown|csv)$/i.test(file.name);
-    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-    if (!isTextFile && !isPdf) {
-      setSourceStatus({ uploadStatus: 'done', storagePath: path, analysisStatus: 'done' });
-      setResearchMsgs((prev) => [...prev, { role: 'assistant', content: `"${file.name}" 파일을 저장했어요. (이미지 등은 자동 분석 대상이 아니라 저장만 했습니다.)` }]);
-      return;
-    }
-
-    setSourceStatus({ uploadStatus: 'done', storagePath: path, analysisStatus: 'analyzing' });
-
-    // 원작 텍스트/PDF를 읽어 AI로 각색 리서치 필드 추출
-    try {
-      // PDF는 base64로, 텍스트 파일은 문자열로 서버에 전달
-      const body = isPdf
-        ? { pdfBase64: await fileToBase64(file), fileName: file.name, model }
-        : { text: await file.text(), model };
-      const res = await fetch('/api/analyze-source', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      recordUsage('research-analyze', data.usage, data.usedModel as ModelId | undefined);
-
-      const ext = (data.extracted ?? {}) as Partial<ResearchData>;
-      const keys = (Object.keys(ext) as (keyof ResearchData)[]).filter((k) => ext[k]);
-
-      if (keys.length > 0) {
-        setResearch((prev) => {
-          const u = { ...prev };
-          for (const k of keys) (u as Record<string, unknown>)[k] = ext[k];
-          return u;
-        });
-        setResearchStatuses((prev) => {
-          const s = { ...prev };
-          for (const k of keys) s[k] = 'inferred';
-          return s;
-        });
-      }
-
-      setSourceStatus({ analysisStatus: 'done' });
-
-      if (keys.length > 0) {
-        // 원작 파일로는 알 수 없는 필드(플랫폼 지표·독자 반응·시장 리서치)가 비었으면
-        // 지어내지 않고, 어떻게 채우는지 방법을 안내한다.
-        const filledOrExt = (k: keyof ResearchData) => ext[k] || research[k];
-        const needsPlatformData = !filledOrExt('metricsOfficial') || !filledOrExt('reactionPositive') || !filledOrExt('reactionNegative');
-        const needsMarketResearch = !filledOrExt('similarWorks') || !filledOrExt('genreTrends') || !filledOrExt('differentiation');
-
-        const parts = [`"${file.name}" 원작을 분석해서 오른쪽 리서치 정보를 채웠어요. 확인하고 맞으면 "확정"해주세요.`];
-        if (needsPlatformData || needsMarketResearch) {
-          parts.push('\n아직 비어 있는 항목은 원작 파일만으로는 알 수 없어요. 이렇게 채울 수 있어요:');
-        }
-        if (needsPlatformData) {
-          parts.push(
-            '\n📊 플랫폼 지표·독자 반응 (조회수·평점·댓글)\n'
-            + '  ① 오른쪽 "원작명"을 확인하고 그 아래 🔍 "AI로 자동 조사하기"를 누르면 게재 플랫폼을 찾아드려요.\n'
-            + '  ② 카카오페이지·문피아·리디 등 작품 페이지를 열어 조회수·평점·별점, 그리고 댓글/리뷰를 드래그해 복사하세요.\n'
-            + '  ③ 🔗 "플랫폼 데이터 가져오기 도우미"에 붙여넣고 "분석해서 채우기"를 누르면 지표·긍정/부정 반응으로 정리해드려요. (숫자는 제가 만들지 않고 붙여주신 것만 정리해요)'
-          );
-        }
-        if (needsMarketResearch) {
-          parts.push('\n🔍 유사 작품·장르 트렌드·차별화 포인트\n  채팅으로 "유사작이랑 차별화 포인트 분석해줘"라고 말씀해주시면 제가 정리해드릴게요.');
-        }
-        setResearchMsgs((prev) => [...prev, { role: 'assistant', content: parts.join('\n') }]);
-      } else {
-        setResearchMsgs((prev) => [...prev, {
-          role: 'assistant',
-          content: `"${file.name}"을 읽었는데 각색 리서치 정보를 뽑아내지 못했어요. 파일 내용을 확인해주세요.`,
-        }]);
-      }
-    } catch (e: any) {
-      console.error('원작 분석 실패:', e);
-      setSourceStatus({ analysisStatus: 'error' });
-      const content = e?.message || `"${file.name}" 분석 중 오류가 발생했어요. 다시 시도해주세요.`;
-      setResearchMsgs((prev) => [...prev, { role: 'assistant', content }]);
-    }
-  }
-
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (file) uploadFileSource(file);
-    e.target.value = '';
-    setAttachOpen(false);
-  }
-
-  /* ── 드래그 앤 드롭 첨부 (리서치 탭 전용) ── */
-  function handleChatDragOver(e: React.DragEvent) {
-    if (tab !== 'research') return;
-    e.preventDefault();
-    setDragOverChat(true);
-  }
-  function handleChatDragLeave(e: React.DragEvent) {
-    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    setDragOverChat(false);
-  }
-  function handleChatDrop(e: React.DragEvent) {
-    if (tab !== 'research') return;
-    e.preventDefault();
-    setDragOverChat(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) setPendingDropFile(file);
-  }
-
   function submitAttach() {
     if (!attachInput.trim()) return;
     addSource(attachMode === 'link' ? 'link' : 'text', attachInput.trim());
@@ -987,7 +841,41 @@ export default function Home() {
     }
   }
 
-  // 한 권 분량 원문(파일 또는 붙여넣기)을 AI로 화 단위 분할 → 새 권으로 아카이브에 추가
+  // 원작 원문(text 또는 pdfBase64)을 분석해 비어 있는 리서치 필드를 채운다.
+  // 여러 권을 차례로 올릴 수 있으므로 이미 값이 있는 필드는 덮어쓰지 않는다(첫 업로드가 채우고 이후엔 보존).
+  async function fillResearchFromSource(source: { text?: string; pdfBase64?: string }) {
+    try {
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...source, model }),  // mode 기본값 'source'
+      });
+      const data = await res.json();
+      if (data.error) return;  // 리서치 채우기는 부가 기능이라 실패해도 아카이브 결과를 막지 않음
+      recordUsage('research-analyze', data.usage, data.usedModel as ModelId | undefined);
+
+      const ext = (data.extracted ?? {}) as Partial<ResearchData>;
+      const keys = (Object.keys(ext) as (keyof ResearchData)[])
+        .filter((k) => ext[k] && !String(research[k] ?? '').trim() && researchStatuses[k] !== 'confirmed');
+      if (keys.length === 0) return;
+      setResearch((prev) => {
+        const u = { ...prev };
+        for (const k of keys) if (!String(prev[k] ?? '').trim()) (u as Record<string, unknown>)[k] = ext[k];
+        return u;
+      });
+      setResearchStatuses((prev) => {
+        const s = { ...prev };
+        for (const k of keys) s[k] = 'inferred';
+        return s;
+      });
+      if (researchMode !== 'adaptation') setResearchMode('adaptation');
+      setSaved(false);
+    } catch {
+      // 무시 — 아카이브 자동 분할은 이미 성공했으므로 조용히 넘어간다
+    }
+  }
+
+  // 한 권 분량 원문(파일 또는 붙여넣기)을 AI로 화 단위 분할 → 새 권으로 아카이브에 추가.
+  // 같은 원문으로 비어 있는 리서치 필드(줄거리·캐릭터 등)도 함께 채운다.
   async function autoSplitVolume(opts: { volumeNumber: string; volumeTitle: string; file?: File; text?: string }): Promise<boolean> {
     try {
       const body: { model: ModelId; mode: 'archive-split'; text?: string; pdfBase64?: string } = { model, mode: 'archive-split' };
@@ -1031,6 +919,8 @@ export default function Home() {
         }],
       }));
       setSaved(false);
+      // 같은 원문으로 리서치 필드도 채움 (실패해도 아카이브 결과엔 영향 없음)
+      await fillResearchFromSource(body.pdfBase64 ? { pdfBase64: body.pdfBase64 } : { text: body.text });
       return true;
     } catch (e: any) {
       alert(e?.message || '자동 정리 중 오류가 발생했어요. 다시 시도해주세요.');
@@ -1299,15 +1189,7 @@ export default function Home() {
           <div
             className="relative flex flex-col flex-1"
             style={{ minWidth: 0 }}
-            onDragOver={handleChatDragOver}
-            onDragLeave={handleChatDragLeave}
-            onDrop={handleChatDrop}
           >
-            {dragOverChat && (
-              <div className="absolute inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-emerald-400 bg-emerald-50/80 pointer-events-none">
-                <p className="text-sm font-semibold text-emerald-600">여기에 파일을 놓아주세요</p>
-              </div>
-            )}
             {/* 메시지 목록 */}
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
               {messages.map((m, i) => {
@@ -1434,11 +1316,7 @@ export default function Home() {
                       +
                     </button>
                     {attachOpen && (
-                      <div className="absolute bottom-full left-0 mb-2 w-44 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-50">
-                        <button onClick={() => fileInputRef.current?.click()}
-                          className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2">
-                          <span>📄</span> 파일 업로드
-                        </button>
+                      <div className="absolute bottom-full left-0 mb-2 w-52 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-50">
                         <button onClick={() => { setAttachMode('link'); setAttachOpen(false); }}
                           className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2">
                           <span>🔗</span> 링크 추가
@@ -1447,9 +1325,11 @@ export default function Home() {
                           className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2">
                           <span>📝</span> 텍스트 붙여넣기
                         </button>
+                        <div className="border-t border-gray-100 px-4 py-2 text-[10px] text-gray-400 leading-relaxed">
+                          📄 원작 파일은 <b>원작 아카이브</b> 탭에서 올리면 화 분할·리서치가 함께 채워져요.
+                        </div>
                       </div>
                     )}
-                    <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} />
                   </div>
                 )}
 
@@ -1531,29 +1411,6 @@ export default function Home() {
       {/* 팀 AI 사용량 */}
       {showUsage && <UsageSummary userEmail={userEmail} onClose={() => setShowUsage(false)} />}
 
-      {/* 드래그로 끌어온 파일 첨부 확인 */}
-      {pendingDropFile && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-          <div className="bg-white rounded-2xl shadow-xl p-5 w-80">
-            <p className="text-sm font-semibold text-gray-800 mb-1">이 파일을 첨부하시겠습니까?</p>
-            <p className="text-xs text-gray-500 mb-4 truncate">{pendingDropFile.name}</p>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setPendingDropFile(null)}
-                className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors"
-              >
-                취소
-              </button>
-              <button
-                onClick={() => { uploadFileSource(pendingDropFile); setPendingDropFile(null); }}
-                className="px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors"
-              >
-                첨부
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
