@@ -3,6 +3,13 @@ import { useEffect, useState } from 'react';
 import FieldItem from './FieldItem';
 import PlatformMetricsEditor from './PlatformMetricsEditor';
 import type { ResearchData, ResearchStatuses, PlatformMetric, SentimentBreakdown } from '@/types';
+import type { ModelId } from '@/lib/models';
+import { PROVIDER_OF_MODEL, type Provider } from '@/lib/budgets';
+
+// 자동조사는 provider별 저비용 고정 모델을 씀 (app/api/analyze-source/route.ts의 resolveDiscoverModel과 동일)
+const DISCOVER_MODEL_LABEL: Record<Provider, string> = {
+  claude: 'Claude Haiku', gemini: 'Gemini Flash', openai: 'GPT-4o mini',
+};
 
 // 독자 감정 비율 도넛 차트 (긍정/부정/중립) — 라이브러리 없이 SVG stroke-dasharray로 그림
 function SentimentDonut({ sentiment }: { sentiment: SentimentBreakdown }) {
@@ -148,6 +155,7 @@ export interface DiscoverResult {
 interface Props {
   research: ResearchData;
   statuses: ResearchStatuses;
+  model: ModelId;
   onChange: (key: keyof ResearchData, value: string) => void;
   onAnalyzeMetrics: (text: string) => Promise<boolean>;
   onDiscover: (title: string) => Promise<DiscoverResult | null>;
@@ -164,9 +172,10 @@ function fallbackSearchUrl(title: string) {
 
 // 플랫폼 페이지 붙여넣기 → AI가 지표·독자반응만 추출해 필드 자동 입력
 function MetricsPasteHelper({
-  originalTitle, onAnalyze, onDiscover, platformMetrics, onAddMetric, onUpdateMetric, onRemoveMetric,
+  originalTitle, model, onAnalyze, onDiscover, platformMetrics, onAddMetric, onUpdateMetric, onRemoveMetric,
 }: {
   originalTitle: string;
+  model: ModelId;
   onAnalyze: (text: string) => Promise<boolean>;
   onDiscover: (title: string) => Promise<DiscoverResult | null>;
   platformMetrics: PlatformMetric[];
@@ -174,6 +183,7 @@ function MetricsPasteHelper({
   onUpdateMetric: (id: string, patch: Partial<PlatformMetric>) => void;
   onRemoveMetric: (id: string) => void;
 }) {
+  const discoverModelLabel = DISCOVER_MODEL_LABEL[PROVIDER_OF_MODEL[model]];
   const [open, setOpen] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [discovering, setDiscovering] = useState(false);
@@ -233,7 +243,7 @@ function MetricsPasteHelper({
           ) : confirmDiscover ? (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 space-y-2">
               <p className="text-[10px] text-amber-800 leading-relaxed">
-                웹 검색은 <b>Claude Haiku</b>만 지원해요. 지금 선택한 모델 대신 Claude Haiku로 조사합니다. 진행할까요?
+                지금 선택한 모델 계열의 저비용 모델(<b>{discoverModelLabel}</b>)로 웹 검색을 진행합니다. 진행할까요?
               </p>
               <div className="flex gap-1.5">
                 <button onClick={runDiscover}
@@ -285,7 +295,7 @@ function MetricsPasteHelper({
   );
 }
 
-export default function ResearchPanel({ research, statuses, onChange, onAnalyzeMetrics, onDiscover, onApplyToPlanning, onAddMetric, onUpdateMetric, onRemoveMetric }: Props) {
+export default function ResearchPanel({ research, statuses, model, onChange, onAnalyzeMetrics, onDiscover, onApplyToPlanning, onAddMetric, onUpdateMetric, onRemoveMetric }: Props) {
   // 리서치 데이터가 채워져 있는지 확인 (문자열 필드 + 플랫폼 지표 배열)
   const hasResearchData =
     Object.values(research).some(v => typeof v === 'string' && v.trim() !== '') ||
@@ -326,6 +336,7 @@ export default function ResearchPanel({ research, statuses, onChange, onAnalyzeM
                   {group.label === '플랫폼 공식 지표' && (
                     <MetricsPasteHelper
                       originalTitle={research.originalTitle}
+                      model={model}
                       onAnalyze={onAnalyzeMetrics}
                       onDiscover={onDiscover}
                       platformMetrics={research.platformMetrics ?? []}

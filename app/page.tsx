@@ -371,9 +371,10 @@ export default function Home() {
     const legend = segs.map((seg) =>
       `<div style="display:flex; align-items:center; gap:6px; font-size:12px; margin:3px 0;"><span style="width:11px; height:11px; background:${seg.color}; display:inline-block; border-radius:2px;"></span><span style="width:32px;">${seg.label}</span><b>${Math.round((seg.value / total) * 100)}%</b></div>`
     ).join('');
+    // 독자 감정 비율 텍스트 필드(원작 콘텐츠 분석 섹션) 바로 아래에 끼워 넣을 것이므로
+    // 별도 섹션 제목(h2) 없이 차트만 반환 — pdf-block 클래스로 페이지 분할 시 안 잘리게 보호
     return `
-      <h2 style="font-size:13px; margin:24px 0 10px; background:#1e3a5f; color:#ffffff; padding:7px 12px; border-left:4px solid #059669;">독자 감정 비율</h2>
-      <div style="display:flex; align-items:center; gap:24px; padding:8px 4px;">
+      <div class="pdf-block" style="display:flex; align-items:center; gap:24px; padding:10px 4px 4px;">
         <svg width="112" height="112" viewBox="0 0 112 112"><circle cx="56" cy="56" r="${r}" fill="none" stroke="#e5e7eb" stroke-width="14" />${arcs}</svg>
         <div>${legend}</div>
       </div>`;
@@ -384,27 +385,36 @@ export default function Home() {
     const html2canvas = (await import('html2canvas')).default;
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-    // 연구 데이터가 내보내기 범위에 포함될 때만 도넛 차트도 그린다
-    const includesResearch = sections.some((s) => s.fields.some((f) => f.label === '독자 감정 비율'));
-    const donutHtml = includesResearch ? sentimentDonutSvgForExport() : '';
-
     // 화면 밖에 실제 렌더링해서 캡처 → 인쇄 다이얼로그 없이 바로 PDF 파일로 다운로드
     const container = document.createElement('div');
     container.style.cssText = 'position:fixed; left:-9999px; top:0; width:700px; padding:40px; background:#ffffff; font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif; color:#1f2937;';
     container.innerHTML = `
-      <h1 style="font-size:20px; margin:0 0 4px; color:#1e3a5f;">${esc(title)}</h1>
-      <p style="font-size:11px; color:#6b7280; margin:0 0 24px;">원작 IP 분석 · 애니메이션 기획 자료</p>
+      <h1 class="pdf-block" style="font-size:20px; margin:0 0 4px; color:#1e3a5f;">${esc(title)}</h1>
+      <p class="pdf-block" style="font-size:11px; color:#6b7280; margin:0 0 24px;">원작 IP 분석 · 애니메이션 기획 자료</p>
       ${sections.map((s) => `
-        <h2 style="font-size:13px; margin:24px 0 10px; background:#1e3a5f; color:#ffffff; padding:7px 12px; border-left:4px solid #059669;">${esc(s.heading)}</h2>
-        ${s.fields.map((f) => `<p style="font-size:12px; line-height:1.7; margin:8px 0 12px; white-space:pre-wrap;"><strong style="display:block; color:#1e3a5f; font-size:11px; margin-bottom:2px;">${esc(f.label)}</strong>${esc(f.value)}</p>`).join('')}
+        <h2 class="pdf-block" style="font-size:13px; margin:24px 0 10px; background:#1e3a5f; color:#ffffff; padding:7px 12px; border-left:4px solid #059669;">${esc(s.heading)}</h2>
+        ${s.fields.map((f) => `
+          <p class="pdf-block" style="font-size:11px; color:#1e3a5f; font-weight:600; margin:8px 0 2px;">${esc(f.label)}</p>
+          ${f.value.split('\n').map((line) => `<p class="pdf-block" style="font-size:12px; line-height:1.7; margin:0 0 2px; white-space:pre-wrap;">${esc(line) || '&nbsp;'}</p>`).join('')}
+          <div style="margin-bottom:10px;"></div>
+          ${f.label === '독자 감정 비율' ? sentimentDonutSvgForExport() : ''}
+        `).join('')}
       `).join('')}
-      ${donutHtml}
     `;
     document.body.appendChild(container);
+
+    // 페이지를 나눌 때 텍스트 중간이 잘리지 않도록, 각 블록(h1/h2/p/차트)의 하단 경계를
+    // 캡처 전 실제 DOM 레이아웃에서 미리 기록해둔다 (컨테이너가 position:fixed라 offsetTop은 컨테이너 기준)
+    const blockBottomsCss = Array.from(container.querySelectorAll<HTMLElement>('.pdf-block'))
+      .map((el) => el.offsetTop + el.offsetHeight)
+      .sort((a, b) => a - b);
 
     // jsPDF의 doc.html() 네이티브 텍스트 렌더러는 기본 폰트(Helvetica)가 한글을 지원하지 않아
     // 한글이 빈칸으로 나온다 — html2canvas로 화면을 그대로 이미지 캡처해서 페이지 단위로 붙여넣는다.
     const canvas = await html2canvas(container, { backgroundColor: '#ffffff', scale: 2 });
+    // CSS px → 캔버스 px 배율 (scale 옵션과 별개로 실측 비율을 써서 오차 방지)
+    const cssToCanvas = canvas.width / container.offsetWidth;
+    const blockBottomsPx = blockBottomsCss.map((b) => b * cssToCanvas);
     document.body.removeChild(container);
 
     const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
@@ -415,7 +425,12 @@ export default function Home() {
     let renderedHeight = 0;
     let first = true;
     while (renderedHeight < canvas.height) {
-      const sliceHeight = Math.min(pageHeightPx, canvas.height - renderedHeight);
+      const maxBottom = Math.min(canvas.height, renderedHeight + pageHeightPx);
+      // 이 페이지 구간 안에서 블록 중간을 지나지 않는 가장 아래쪽 경계를 찾아 거기서 자른다.
+      // 블록 하나가 한 페이지보다 커서 안전한 경계가 없으면(예: 아주 긴 줄거리) 어쩔 수 없이 그대로 자른다.
+      const safeBottoms = blockBottomsPx.filter((b) => b > renderedHeight + 1 && b <= maxBottom);
+      const sliceEnd = safeBottoms.length > 0 ? safeBottoms[safeBottoms.length - 1] : maxBottom;
+      const sliceHeight = sliceEnd - renderedHeight;
       const sliceCanvas = document.createElement('canvas');
       sliceCanvas.width = canvas.width;
       sliceCanvas.height = sliceHeight;
@@ -424,7 +439,7 @@ export default function Home() {
       if (!first) pdf.addPage();
       const sliceHeightPt = sliceHeight * (pageWidth / canvas.width);
       pdf.addImage(sliceCanvas.toDataURL('image/png'), 'PNG', 20, 20, pageWidth, sliceHeightPt);
-      renderedHeight += sliceHeight;
+      renderedHeight = sliceEnd;
       first = false;
     }
     pdf.save(`${title}.pdf`);
@@ -500,7 +515,7 @@ export default function Home() {
     if (discoverTitle) {
       setResearchMsgs((prev) => [...prev, {
         role: 'assistant',
-        content: `「${discoverTitle}」을(를) 웹에서 찾아 채워볼게요. 잠시만요…`,
+        content: `「${discoverTitle}」을(를) 웹에서 찾아 채워볼게요. 웹 검색이라 최대 30초 정도 걸릴 수 있어요 — 멈춘 게 아니니 조금만 기다려주세요 🔍`,
       }]);
       await runChatDiscover(discoverTitle);
       setSaved(false);
@@ -974,12 +989,13 @@ export default function Home() {
     }
   }
 
-  /* ── 원작명으로 웹 검색해서 게재 플랫폼·개요 필드를 자동으로 찾아 채움 (항상 Claude Haiku + 웹 검색 사용) ── */
+  /* ── 원작명으로 웹 검색해서 게재 플랫폼·개요 필드를 자동으로 찾아 채움
+     (선택한 모델의 provider 안에서 저비용 모델 + 웹 검색 사용 — Gemini Flash / Claude Haiku / GPT-4o mini) ── */
   async function discoverFromTitle(title: string): Promise<DiscoverResult | null> {
     try {
       const res = await fetch('/api/analyze-source', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: title, mode: 'discover' }),
+        body: JSON.stringify({ text: title, model, mode: 'discover' }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -1320,6 +1336,7 @@ export default function Home() {
                 <ResearchPanel
                   research={research}
                   statuses={researchStatuses}
+                  model={model}
                   onChange={handleResearchFieldChange}
                   onAnalyzeMetrics={analyzePastedMetrics}
                   onDiscover={discoverFromTitle}

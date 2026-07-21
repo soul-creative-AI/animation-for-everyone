@@ -3,8 +3,9 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { NextRequest, NextResponse } from 'next/server';
 import type { ResearchData } from '@/types';
-import { type TokenUsage, EMPTY_USAGE, claudeUsage, openaiUsage, geminiUsage } from '@/lib/usage';
+import { type TokenUsage, EMPTY_USAGE, claudeUsage, openaiUsage, geminiUsage, openaiResponsesUsage } from '@/lib/usage';
 import { checkBudgetLock, budgetLockMessage } from '@/lib/budgetGuard';
+import { PROVIDER_OF_MODEL } from '@/lib/budgets';
 
 interface AiResult { text: string; usage: TokenUsage; }
 
@@ -123,18 +124,23 @@ type AnalyzeMode = 'source' | 'metrics' | 'discover';
 
 interface Prompts { system: string; userPrefix: string; }
 
+// 세 provider 모두 동일한 조사 요청 문구를 사용 (필드 목록은 DISCOVER_PROMPT의 JSON 스펙 참고)
+function discoverQuery(title: string): string {
+  return `"${title}"를 검색해서 게재 플랫폼과 작품 개요(작가·형식·장르·핵심설정), 전체 줄거리, 주요 캐릭터, 유사 작품·장르 트렌드·차별화 포인트를 알려주세요.`;
+}
+
 // 원작명으로 웹을 검색해서 게재 플랫폼·링크와 개요 필드를 찾음 (Claude web_search 도구, $0.01/회 + 토큰)
-async function callClaudeDiscover(title: string): Promise<AiResult> {
+async function callClaudeDiscover(title: string, modelId: string): Promise<AiResult> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const response = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+    model: modelId,
     max_tokens: 2048,
     system: DISCOVER_PROMPT,
     // Haiku는 동적 필터링(코드 실행 기반 호출)을 지원 안 해서 direct 호출로 강제
     tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 3, allowed_callers: ['direct'] } as any],
     // 검색 여부를 모델 판단에 맡기면 가끔 검색을 건너뛰므로, 이 기능은 항상 검색하도록 강제
     tool_choice: { type: 'tool', name: 'web_search' },
-    messages: [{ role: 'user', content: `"${title}"를 검색해서 게재 플랫폼과 작품 개요(작가·형식·장르·핵심설정)를 알려주세요.` }],
+    messages: [{ role: 'user', content: discoverQuery(title) }],
   });
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
@@ -143,6 +149,51 @@ async function callClaudeDiscover(title: string): Promise<AiResult> {
   const usage = claudeUsage(response.usage);
   usage.webSearches = (response.usage as any)?.server_tool_use?.web_search_requests ?? 0;
   return { text, usage };
+}
+
+// Gemini의 구글 검색 그라운딩 도구로 조사 (Gemini Flash, 토큰 요금만 — 검색 자체는 별도 과금 없음)
+// google_search — 구 googleSearchRetrieval 도구는 폐기됐고(gemini-3.5-flash가 400으로 거부),
+// 설치된 SDK(@google/generative-ai 0.24.1) 타입 정의가 아직 신규 도구를 모르므로 as any로 우회
+async function callGeminiDiscover(title: string, modelId: string): Promise<AiResult> {
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+  const model = genAI.getGenerativeModel({
+    model: modelId,
+    systemInstruction: DISCOVER_PROMPT,
+    tools: [{ googleSearch: {} } as any],
+  });
+  const result = await model.generateContent(discoverQuery(title));
+  const r = result.response;
+  const usage = geminiUsage(r.usageMetadata);
+  // Claude처럼 검색 횟수 과금 API가 없어 실제 검색 수행 여부만 기록(로그·표시용, 비용엔 반영 안 됨)
+  usage.webSearches = (r.candidates?.[0]?.groundingMetadata?.webSearchQueries?.length ?? 0) > 0 ? 1 : 0;
+  return { text: r.text(), usage };
+}
+
+// OpenAI Responses API의 내장 웹 검색 도구로 조사 (Chat Completions API는 web_search 미지원)
+async function callOpenAIDiscover(title: string, modelId: string): Promise<AiResult> {
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const response = await client.responses.create({
+    model: modelId,
+    instructions: DISCOVER_PROMPT,
+    input: discoverQuery(title),
+    tools: [{ type: 'web_search' }],
+    // 검색을 건너뛰지 않도록 강제 (Claude와 동일한 이유)
+    tool_choice: 'required',
+  });
+  const usage = openaiResponsesUsage(response.usage);
+  usage.webSearches = response.output.filter((o) => o.type === 'web_search_call').length;
+  return { text: response.output_text, usage };
+}
+
+// discover 모드는 비용 예측 가능성을 위해 provider별로 저렴한 고정 모델을 씀
+// (사용자가 어떤 모델을 선택했든, 그 모델의 provider 안에서만 저비용 모델로 조사)
+function resolveDiscoverModel(model: ModelId): { alias: ModelId; apiModel: string } {
+  switch (PROVIDER_OF_MODEL[model]) {
+    case 'gemini': return { alias: 'gemini',       apiModel: 'gemini-3.5-flash' };
+    case 'openai': return { alias: 'gpt-4o-mini',  apiModel: 'gpt-4o-mini' };
+    case 'claude':
+    default:       return { alias: 'claude-haiku', apiModel: 'claude-haiku-4-5-20251001' };
+  }
 }
 
 async function callGemini(text: string, p: Prompts): Promise<AiResult> {
@@ -245,15 +296,24 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: '분석할 내용이 비어 있습니다.' }, { status: 400 });
     }
 
-    // 자동 조사는 항상 Claude Haiku + 웹 검색을 씀 (모델 선택 드롭다운과 무관)
-    const lockModel: ModelId = mode === 'discover' ? 'claude-haiku' : model;
+    // 자동 조사는 선택한 모델의 provider 안에서 저비용 고정 모델 + 웹 검색을 씀
+    const discoverModel = mode === 'discover' ? resolveDiscoverModel(model) : null;
+    const lockModel: ModelId = discoverModel ? discoverModel.alias : model;
     const lock = await checkBudgetLock(lockModel);
     if (lock?.locked) {
       return NextResponse.json({ error: budgetLockMessage(lock) }, { status: 402 });
     }
 
-    if (mode === 'discover') {
-      const result = await withRetry(() => callClaudeDiscover(text!), 'Claude Discover');
+    if (mode === 'discover' && discoverModel) {
+      const provider = PROVIDER_OF_MODEL[discoverModel.alias];
+      const result = await withRetry(() => {
+        switch (provider) {
+          case 'gemini': return callGeminiDiscover(text!, discoverModel.apiModel);
+          case 'openai': return callOpenAIDiscover(text!, discoverModel.apiModel);
+          case 'claude':
+          default:       return callClaudeDiscover(text!, discoverModel.apiModel);
+        }
+      }, `${provider} Discover`);
       const jsonMatch = result.text.match(/```json\s*([\s\S]*?)\s*```/) ?? result.text.match(/\{[\s\S]*\}/);
       let discover: {
         found: boolean;
@@ -265,9 +325,9 @@ export async function POST(req: NextRequest) {
         try { discover = JSON.parse(jsonMatch[1] ?? jsonMatch[0]); } catch {}
       }
       const filledCount = Object.values(discover.fields ?? {}).filter(Boolean).length;
-      console.log(`[discover] title="${text}" found=${discover.found} platforms=${discover.platforms?.length ?? 0} 채운필드=${filledCount}. 원본 앞 400자:\n`, result.text.slice(0, 400));
-      // 자동 조사는 항상 Claude Haiku를 사용 — 사용량이 정확한 모델로 기록되도록 usedModel 반환
-      return NextResponse.json({ discover, usage: result.usage, usedModel: 'claude-haiku' });
+      console.log(`[discover] title="${text}" provider=${provider} found=${discover.found} platforms=${discover.platforms?.length ?? 0} 채운필드=${filledCount}. 원본 앞 400자:\n`, result.text.slice(0, 400));
+      // 사용량이 실제 사용한 모델(별칭)로 정확히 기록되도록 usedModel 반환
+      return NextResponse.json({ discover, usage: result.usage, usedModel: discoverModel.alias });
     }
 
     const p: Prompts = mode === 'metrics'

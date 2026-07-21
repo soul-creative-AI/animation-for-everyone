@@ -36,6 +36,17 @@ export function geminiUsage(m: any): TokenUsage {
   };
 }
 
+// OpenAI Responses API(client.responses.create)는 Chat Completions와 필드명이 다름
+// (prompt_tokens → input_tokens 등) — 웹 검색 도구는 Responses API에서만 지원돼서 별도로 둠
+export function openaiResponsesUsage(u: any): TokenUsage {
+  const cached = u?.input_tokens_details?.cached_tokens ?? 0;
+  return {
+    inputTokens: Math.max(0, (u?.input_tokens ?? 0) - cached),
+    outputTokens: u?.output_tokens ?? 0,
+    cachedInputTokens: cached,
+  };
+}
+
 // ── 모델별 단가 (USD / 1M 토큰) ───────────────────────────────
 // ⚠️ Claude 외 단가는 근사치입니다. 실제 청구액과 다를 수 있으니
 //    각 provider 공식 가격을 확인해 갱신하세요. 캐시 입력은 입력가의 10%로 근사.

@@ -1,7 +1,7 @@
 import type { Proposal, PendingChange, ResearchData, PlanningData } from '@/types';
 
 const PLANNING_FIRST = '어떤 애니메이션을 만들고 싶으세요?\n간단한 아이디어도 좋아요. 장르, 분위기, 떠오르는 장면 등 자유롭게 말씀해주세요!';
-const RESEARCH_FIRST = '리서치를 시작해볼게요! 먼저 하나만 알려주세요.\n이 작품은 처음부터 새로 만드는 오리지널인가요, 아니면 원작이 있는 각색 작품인가요? 각색이라면 원작 파일을 첨부해주시면 제가 바로 분석해드릴게요.';
+const RESEARCH_FIRST = '리서치를 시작해볼게요! 먼저 하나만 알려주세요.\n이 작품은 처음부터 새로 만드는 오리지널인가요, 아니면 원작이 있는 각색 작품인가요?\n\n오리지널이라면 어떤 아이디어를 갖고 계신지 편하게 말씀해주세요!\n각색이라면 "OOO 리서치해줘"처럼 작품명과 함께 말씀해주시면 제가 웹에서 바로 찾아드려요. 원작 파일을 첨부해주시면 더 정확하게 분석해드릴 수 있어요.';
 
 export { PLANNING_FIRST, RESEARCH_FIRST };
 
