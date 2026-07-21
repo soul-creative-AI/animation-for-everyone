@@ -987,6 +987,57 @@ export default function Home() {
     }
   }
 
+  // 한 권 분량 원문(파일 또는 붙여넣기)을 AI로 화 단위 분할 → 새 권으로 아카이브에 추가
+  async function autoSplitVolume(opts: { volumeNumber: string; volumeTitle: string; file?: File; text?: string }): Promise<boolean> {
+    try {
+      const body: { model: ModelId; mode: 'archive-split'; text?: string; pdfBase64?: string } = { model, mode: 'archive-split' };
+      if (opts.file) {
+        const isPdf = opts.file.type === 'application/pdf' || /\.pdf$/i.test(opts.file.name);
+        if (isPdf) body.pdfBase64 = await fileToBase64(opts.file);
+        else body.text = await opts.file.text();
+      } else {
+        body.text = opts.text ?? '';
+      }
+      if (!body.text?.trim() && !body.pdfBase64) {
+        alert('원문 파일이나 텍스트를 넣어주세요.');
+        return false;
+      }
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      recordUsage('archive-split', data.usage, data.usedModel as ModelId | undefined);
+
+      const chapters = (data.chapters ?? []) as { number?: string; title?: string; summary?: string; characters?: string; sceneTags?: string }[];
+      if (chapters.length === 0) {
+        alert('원문에서 화를 나누지 못했어요. 한 권 분량인지, 형식이 너무 특이하지 않은지 확인해주세요. (분량이 아주 크면 앞부분만 인식될 수 있어요)');
+        return false;
+      }
+      setArchive((prev) => ({
+        volumes: [...prev.volumes, {
+          id: crypto.randomUUID(),
+          number: opts.volumeNumber || String(prev.volumes.length + 1),
+          title: opts.volumeTitle || '',
+          chapters: chapters.map((c, i) => ({
+            id: crypto.randomUUID(),
+            number: String(c.number ?? i + 1),
+            title: c.title ?? '',
+            summary: c.summary ?? '',
+            characters: c.characters ?? '',
+            sceneTags: c.sceneTags ?? '',
+          })),
+        }],
+      }));
+      setSaved(false);
+      return true;
+    } catch (e: any) {
+      alert(e?.message || '자동 정리 중 오류가 발생했어요. 다시 시도해주세요.');
+      return false;
+    }
+  }
+
   /* ── 리서치 → 기획 적용 ──
      비어있는 기획 필드만 리서치 데이터로 채운다. 사용자가 확정(confirmed)한 필드는 건드리지 않음. */
   function applyResearchToPlanning() {
@@ -1238,6 +1289,7 @@ export default function Home() {
               onUpdateChapter={updateArchiveChapter}
               onRemoveChapter={removeArchiveChapter}
               onSummarizeChapter={summarizeArchiveChapter}
+              onAutoSplit={autoSplitVolume}
             />
           </div>
         ) : (

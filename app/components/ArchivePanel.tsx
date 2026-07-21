@@ -12,6 +12,68 @@ interface Props {
   onRemoveChapter: (volumeId: string, chapterId: string) => void;
   // 원문 텍스트로 그 화의 요약·인물·장면을 AI로 채움
   onSummarizeChapter: (volumeId: string, chapterId: string, sourceText: string) => Promise<boolean>;
+  // 한 권 분량 원문(파일/텍스트)을 AI로 화 단위 자동 분할해 새 권으로 추가
+  onAutoSplit: (opts: { volumeNumber: string; volumeTitle: string; file?: File; text?: string }) => Promise<boolean>;
+}
+
+// ── 원문 업로드 → 화 자동 분할 박스 ──
+function AutoSplitBox({ nextVolumeNumber, onAutoSplit }: {
+  nextVolumeNumber: number;
+  onAutoSplit: (opts: { volumeNumber: string; volumeTitle: string; file?: File; text?: string }) => Promise<boolean>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [volNumber, setVolNumber] = useState(String(nextVolumeNumber));
+  const [volTitle, setVolTitle] = useState('');
+  const [pasteText, setPasteText] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const inputCls = 'bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs text-gray-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all';
+
+  async function run() {
+    if (busy) return;
+    if (!file && !pasteText.trim()) { alert('원문 파일을 선택하거나 텍스트를 붙여넣어주세요.'); return; }
+    setBusy(true);
+    const ok = await onAutoSplit({ volumeNumber: volNumber, volumeTitle: volTitle, file: file ?? undefined, text: pasteText });
+    setBusy(false);
+    if (ok) { setPasteText(''); setFile(null); setVolTitle(''); setVolNumber(String(nextVolumeNumber + 1)); setOpen(false); }
+  }
+
+  return (
+    <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-3 mb-3">
+      <button onClick={() => setOpen((o) => !o)} className="w-full text-left text-xs font-semibold text-emerald-700 hover:text-emerald-800 transition-colors">
+        📄 원문 올려서 화 자동 정리 {open ? '▲' : '▼'}
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <p className="text-[10px] text-gray-500 leading-relaxed">
+            <b>한 권 분량</b>의 원문 파일(txt·pdf)을 올리거나 텍스트를 붙여넣으면, AI가 화(챕터) 단위로 나눠 요약·인물·장면까지 채워 새 권으로 추가해요. 분량이 아주 크면 권 단위로 나눠 올려주세요.
+          </p>
+          <div className="flex gap-2 items-center">
+            <input value={volNumber} onChange={(e) => setVolNumber(e.target.value)} className={`${inputCls} w-14`} placeholder="권" />
+            <span className="text-[11px] text-gray-400">권</span>
+            <input value={volTitle} onChange={(e) => setVolTitle(e.target.value)} className={`${inputCls} flex-1`} placeholder="권 제목 (선택)" />
+          </div>
+          <label className="block">
+            <span className="text-[10px] text-gray-500">원문 파일 (txt / pdf)</span>
+            <input type="file" accept=".txt,.md,.pdf,text/plain,application/pdf"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              className="mt-1 block w-full text-[11px] text-gray-600 file:mr-2 file:py-1 file:px-2 file:rounded-lg file:border-0 file:text-[11px] file:font-semibold file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200" />
+          </label>
+          {!file && (
+            <>
+              <p className="text-[10px] text-gray-400 text-center">또는</p>
+              <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} rows={4} placeholder="원문을 붙여넣으세요 (한 권 분량)" className={`${inputCls} w-full resize-none`} />
+            </>
+          )}
+          <button onClick={run} disabled={busy}
+            className="w-full px-3 py-2 rounded-lg text-xs font-semibold bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 text-white transition-colors">
+            {busy ? '자동 정리 중... (분량에 따라 시간이 걸려요)' : '✨ 화 단위로 자동 정리'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // 검색어를 강조 표시
@@ -104,7 +166,7 @@ function ChapterCard({
 
 export default function ArchivePanel({
   archive, onAddVolume, onUpdateVolume, onRemoveVolume,
-  onAddChapter, onUpdateChapter, onRemoveChapter, onSummarizeChapter,
+  onAddChapter, onUpdateChapter, onRemoveChapter, onSummarizeChapter, onAutoSplit,
 }: Props) {
   const [query, setQuery] = useState('');
   const [openVolumes, setOpenVolumes] = useState<Record<string, boolean>>({});
@@ -176,6 +238,7 @@ export default function ArchivePanel({
         ) : (
           /* 편집 모드 (권 아코디언) */
           <div className="space-y-3">
+            <AutoSplitBox nextVolumeNumber={archive.volumes.length + 1} onAutoSplit={onAutoSplit} />
             {archive.volumes.length === 0 && (
               <div className="text-center py-12 text-gray-400">
                 <p className="text-sm">아직 등록된 권이 없어요.</p>
