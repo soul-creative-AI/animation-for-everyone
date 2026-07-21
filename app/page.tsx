@@ -750,14 +750,7 @@ export default function Home() {
     setSaved(false);
   }
 
-  /* ── 원작 아카이브: 권/화 추가·수정·삭제 ── */
-  function addArchiveVolume() {
-    setArchive((prev) => ({
-      volumes: [...prev.volumes, { id: crypto.randomUUID(), number: String(prev.volumes.length + 1), title: '', chapters: [] }],
-    }));
-    setSaved(false);
-  }
-
+  /* ── 원작 아카이브: 권/화 수정·삭제 (추가는 원문 자동 정리로만) ── */
   function updateArchiveVolume(id: string, patch: Partial<ArchiveVolume>) {
     setArchive((prev) => ({
       volumes: prev.volumes.map((v) => (v.id === id ? { ...v, ...patch } : v)),
@@ -768,17 +761,6 @@ export default function Home() {
   function removeArchiveVolume(id: string) {
     if (!confirm('이 권과 안에 있는 모든 화를 삭제할까요?')) return;
     setArchive((prev) => ({ volumes: prev.volumes.filter((v) => v.id !== id) }));
-    setSaved(false);
-  }
-
-  function addArchiveChapter(volumeId: string) {
-    setArchive((prev) => ({
-      volumes: prev.volumes.map((v) =>
-        v.id === volumeId
-          ? { ...v, chapters: [...v.chapters, { id: crypto.randomUUID(), number: String(v.chapters.length + 1), title: '', summary: '', characters: '', sceneTags: '' }] }
-          : v,
-      ),
-    }));
     setSaved(false);
   }
 
@@ -800,45 +782,6 @@ export default function Home() {
       ),
     }));
     setSaved(false);
-  }
-
-  // 화 원문을 AI로 요약해서 그 화의 요약·등장인물·장면 태그를 채움
-  async function summarizeArchiveChapter(volumeId: string, chapterId: string, sourceText: string): Promise<boolean> {
-    try {
-      const res = await fetch('/api/analyze-source', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: sourceText, model, mode: 'chapter' }),
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      recordUsage('archive-chapter', data.usage, data.usedModel as ModelId | undefined);
-
-      const ext = (data.extracted ?? {}) as { title?: string; summary?: string; characters?: string; sceneTags?: string };
-      if (!ext.summary && !ext.characters && !ext.sceneTags && !ext.title) {
-        alert('원문에서 요약할 내용을 찾지 못했어요. 텍스트를 확인해주세요.');
-        return false;
-      }
-      setArchive((prev) => ({
-        volumes: prev.volumes.map((v) =>
-          v.id !== volumeId ? v : {
-            ...v,
-            chapters: v.chapters.map((c) => c.id !== chapterId ? c : {
-              ...c,
-              // 사용자가 이미 입력한 제목은 유지, 비어 있을 때만 AI 제목 사용
-              title: c.title.trim() ? c.title : (ext.title ?? ''),
-              summary: ext.summary ?? c.summary,
-              characters: ext.characters ?? c.characters,
-              sceneTags: ext.sceneTags ?? c.sceneTags,
-            }),
-          },
-        ),
-      }));
-      setSaved(false);
-      return true;
-    } catch (e: any) {
-      alert(e?.message || '요약 중 오류가 발생했어요. 다시 시도해주세요.');
-      return false;
-    }
   }
 
   // 원작 원문(text 또는 pdfBase64)을 분석해 비어 있는 리서치 필드를 채운다.
@@ -875,8 +818,8 @@ export default function Home() {
   }
 
   // 한 권 분량 원문(파일 또는 붙여넣기)을 AI로 화 단위 분할 → 새 권으로 아카이브에 추가.
-  // 같은 원문으로 비어 있는 리서치 필드(줄거리·캐릭터 등)도 함께 채운다.
-  async function autoSplitVolume(opts: { volumeNumber: string; volumeTitle: string; file?: File; text?: string }): Promise<boolean> {
+  // 권 번호는 올린 순서대로 자동 지정. 같은 원문으로 비어 있는 리서치 필드(줄거리·캐릭터 등)도 함께 채운다.
+  async function autoSplitVolume(opts: { file?: File; text?: string }): Promise<boolean> {
     try {
       const body: { model: ModelId; mode: 'archive-split'; text?: string; pdfBase64?: string } = { model, mode: 'archive-split' };
       if (opts.file) {
@@ -906,8 +849,8 @@ export default function Home() {
       setArchive((prev) => ({
         volumes: [...prev.volumes, {
           id: crypto.randomUUID(),
-          number: opts.volumeNumber || String(prev.volumes.length + 1),
-          title: opts.volumeTitle || '',
+          number: String(prev.volumes.length + 1),
+          title: '',
           chapters: chapters.map((c, i) => ({
             id: crypto.randomUUID(),
             number: String(c.number ?? i + 1),
@@ -1172,13 +1115,12 @@ export default function Home() {
           <div className="flex flex-1 overflow-hidden">
             <ArchivePanel
               archive={archive}
-              onAddVolume={addArchiveVolume}
+              model={model}
+              onModelChange={setModel}
               onUpdateVolume={updateArchiveVolume}
               onRemoveVolume={removeArchiveVolume}
-              onAddChapter={addArchiveChapter}
               onUpdateChapter={updateArchiveChapter}
               onRemoveChapter={removeArchiveChapter}
-              onSummarizeChapter={summarizeArchiveChapter}
               onAutoSplit={autoSplitVolume}
             />
           </div>
