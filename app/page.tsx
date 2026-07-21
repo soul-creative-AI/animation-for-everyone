@@ -9,7 +9,7 @@ import type {
 import { defaultPlanningData, defaultResearchData } from '@/types';
 import { PLANNING_FIRST, RESEARCH_FIRST, getMockProposals } from '@/lib/mock';
 import { MODELS, type ModelId } from '@/lib/models';
-import { createProject } from '@/lib/project';
+import { createProject, duplicateProject } from '@/lib/project';
 import { type TokenUsage, estimateCostUsd } from '@/lib/usage';
 import { PROVIDER_OF_MODEL } from '@/lib/budgets';
 import { createClient } from '@/lib/supabase/client';
@@ -37,6 +37,28 @@ function fileToBase64(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+// "○○ 리서치해줘 / 조사해줘 / 찾아줘 / 검색해줘" 형태에서 조사할 원작명만 뽑아낸다.
+// 모델 판단에 의존하지 않고 코드가 직접 감지 → 자동조사를 확실히 촉발하기 위함.
+// 매칭되지 않으면(일반 대화) null 반환.
+function parseDiscoverRequest(text: string): string | null {
+  const t = text.trim();
+  // <제목> [에 대해/를/을/좀] (리서치|조사|서치|검색|자료조사|알아봐|찾아) [해줘/줘/...]
+  const re = /^(.+?)\s*(?:에\s*대해서?|에\s*대한|에\s*관해서?|를|을|좀)?\s*(?:리서치|조사|서치|검색|자료\s*조사|알아봐|찾아봐|찾아)\s*(?:좀)?\s*(?:해\s*줘|해주세요|해\s*주세요|해봐|해\s*봐|부탁(?:해요?|드려요|드립니다)?|줘|해\s*줄래|해도\s*돼|해\s*줄\s*수\s*있어)?\s*[.!?~]*$/;
+  const m = t.match(re);
+  if (!m) return null;
+  const title = m[1].trim().replace(/^['"“”「『<]+|['"“”」』>]+$/g, '').trim();
+  return title.length >= 2 ? title : null;
+}
+
+// PDF 내보내기용: 긴 필드 값을 문장 단위 조각으로 나눈다 (문장 끝 부호·줄바꿈 뒤에서 끊음).
+// 각 조각을 span으로 감싸 페이지 분할 후보로 삼으면, 한 문단이 페이지보다 길어도 문장 사이에서 끊긴다.
+// 구분 부호는 앞 조각에 포함해서 원문 문자가 손실되지 않도록 한다 (white-space:pre-wrap로 렌더).
+function splitSentences(text: string): string[] {
+  const parts = text.match(/[\s\S]*?(?:[.!?。…]+|\n|$)/g);
+  const chunks = (parts ?? [text]).filter((p) => p.length > 0);
+  return chunks.length > 0 ? chunks : [text];
 }
 
 // ── 컴포넌트 ───────────────────────────────────────────────────
@@ -240,6 +262,19 @@ export default function Home() {
     }
   }
 
+  async function handleDuplicate(id: string) {
+    const src = projects.find((p) => p.id === id);
+    if (!src) return;
+    const copy = duplicateProject(src);
+    try {
+      await createNewProject(copy);
+      applyProject(copy);
+    } catch (e) {
+      console.error('Duplicate failed:', e);
+      alert('프로젝트 복제에 실패했습니다');
+    }
+  }
+
   async function handleDelete() {
     try {
       await deleteProject(currentId);
@@ -293,6 +328,18 @@ export default function Home() {
             value: rows.length > 0 ? rows.join('\n') : '확인 필요 (플랫폼 수치 미수집)',
           });
         }
+        // 독자 반응 섹션엔 감정 비율(도넛 차트 데이터)을 텍스트로도 남김 — 내보내기에서 사라지지 않도록
+        if (s.groups.some((g) => g.label === '독자 반응 분석') && research.sentiment) {
+          const { positive, negative, neutral } = research.sentiment;
+          const total = positive + negative + neutral;
+          if (total > 0) {
+            const pct = (n: number) => Math.round((n / total) * 100);
+            fields.unshift({
+              label: '독자 감정 비율',
+              value: `긍정 ${pct(positive)}% · 부정 ${pct(negative)}% · 중립 ${pct(neutral)}%`,
+            });
+          }
+        }
         if (fields.length > 0) sections.push({ heading: s.heading, fields });
       }
     }
@@ -311,6 +358,37 @@ export default function Home() {
     a.click(); URL.revokeObjectURL(a.href);
   }
 
+  // PDF 내보내기용 감정 비율 도넛 SVG (화면 컴포넌트와 동일한 stroke-dasharray 방식)
+  function sentimentDonutSvgForExport(): string {
+    const s = research.sentiment;
+    if (!s) return '';
+    const total = s.positive + s.negative + s.neutral;
+    if (total <= 0) return '';
+    const segs = [
+      { label: '긍정', value: s.positive, color: '#10b981' },
+      { label: '부정', value: s.negative, color: '#f43f5e' },
+      { label: '중립', value: s.neutral, color: '#9ca3af' },
+    ];
+    const r = 42, c = 2 * Math.PI * r;
+    let offset = 0;
+    const arcs = segs.map((seg) => {
+      const dash = (seg.value / total) * c;
+      const el = `<circle cx="56" cy="56" r="${r}" fill="none" stroke="${seg.color}" stroke-width="14" stroke-dasharray="${dash} ${c - dash}" stroke-dashoffset="${-offset}" transform="rotate(-90 56 56)" />`;
+      offset += dash;
+      return el;
+    }).join('');
+    const legend = segs.map((seg) =>
+      `<div style="display:flex; align-items:center; gap:6px; font-size:12px; margin:3px 0;"><span style="width:11px; height:11px; background:${seg.color}; display:inline-block; border-radius:2px;"></span><span style="width:32px;">${seg.label}</span><b>${Math.round((seg.value / total) * 100)}%</b></div>`
+    ).join('');
+    // 독자 감정 비율 텍스트 필드(원작 콘텐츠 분석 섹션) 바로 아래에 끼워 넣을 것이므로
+    // 별도 섹션 제목(h2) 없이 차트만 반환 — pdf-block 클래스로 페이지 분할 시 안 잘리게 보호
+    return `
+      <div class="pdf-block" style="display:flex; align-items:center; gap:24px; padding:10px 4px 4px;">
+        <svg width="112" height="112" viewBox="0 0 112 112"><circle cx="56" cy="56" r="${r}" fill="none" stroke="#e5e7eb" stroke-width="14" />${arcs}</svg>
+        <div>${legend}</div>
+      </div>`;
+  }
+
   async function exportAsPdf(sections: ReturnType<typeof buildExportSections>) {
     const { jsPDF } = await import('jspdf');
     const html2canvas = (await import('html2canvas')).default;
@@ -320,27 +398,50 @@ export default function Home() {
     const container = document.createElement('div');
     container.style.cssText = 'position:fixed; left:-9999px; top:0; width:700px; padding:40px; background:#ffffff; font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif; color:#1f2937;';
     container.innerHTML = `
-      <h1 style="font-size:20px; margin:0 0 4px; color:#1e3a5f;">${esc(title)}</h1>
-      <p style="font-size:11px; color:#6b7280; margin:0 0 24px;">원작 IP 분석 · 애니메이션 기획 자료</p>
+      <h1 class="pdf-block" style="font-size:20px; margin:0 0 4px; color:#1e3a5f;">${esc(title)}</h1>
+      <p class="pdf-block" style="font-size:11px; color:#6b7280; margin:0 0 24px;">원작 IP 분석 · 애니메이션 기획 자료</p>
       ${sections.map((s) => `
-        <h2 style="font-size:13px; margin:24px 0 10px; background:#1e3a5f; color:#ffffff; padding:7px 12px; border-left:4px solid #059669;">${esc(s.heading)}</h2>
-        ${s.fields.map((f) => `<p style="font-size:12px; line-height:1.7; margin:8px 0 12px; white-space:pre-wrap;"><strong style="display:block; color:#1e3a5f; font-size:11px; margin-bottom:2px;">${esc(f.label)}</strong>${esc(f.value)}</p>`).join('')}
+        <h2 class="pdf-block" style="font-size:13px; margin:24px 0 10px; background:#1e3a5f; color:#ffffff; padding:7px 12px; border-left:4px solid #059669;">${esc(s.heading)}</h2>
+        ${s.fields.map((f) => `
+          <p class="pdf-block" style="font-size:11px; color:#1e3a5f; font-weight:600; margin:8px 0 2px;">${esc(f.label)}</p>
+          <p class="pdf-block" style="font-size:12px; line-height:1.7; margin:0 0 10px; white-space:pre-wrap;">${splitSentences(f.value).map((s2) => `<span class="pdf-break">${esc(s2)}</span>`).join('')}</p>
+          ${f.label === '독자 감정 비율' ? sentimentDonutSvgForExport() : ''}
+        `).join('')}
       `).join('')}
     `;
     document.body.appendChild(container);
 
+    // 페이지를 나눌 때 텍스트 중간이 잘리지 않도록, 안전하게 끊을 수 있는 지점(하단 경계)을 미리 모은다.
+    // - .pdf-block: 제목·라벨·차트 등 통째로 움직여야 하는 블록
+    // - .pdf-break: 문장 단위 span — 긴 문단도 문장 사이에서 끊을 수 있게 함
+    // span은 여러 줄에 걸치면 offsetTop이 부정확하므로 getBoundingClientRect로 컨테이너 상단 기준 좌표를 잰다.
+    const containerTop = container.getBoundingClientRect().top;
+    const blockBottomsCss = Array.from(container.querySelectorAll<HTMLElement>('.pdf-block, .pdf-break'))
+      .map((el) => el.getBoundingClientRect().bottom - containerTop)
+      .sort((a, b) => a - b);
+
     // jsPDF의 doc.html() 네이티브 텍스트 렌더러는 기본 폰트(Helvetica)가 한글을 지원하지 않아
     // 한글이 빈칸으로 나온다 — html2canvas로 화면을 그대로 이미지 캡처해서 페이지 단위로 붙여넣는다.
     const canvas = await html2canvas(container, { backgroundColor: '#ffffff', scale: 2 });
+    // CSS px → 캔버스 px 배율 (scale 옵션과 별개로 실측 비율을 써서 오차 방지)
+    const cssToCanvas = canvas.width / container.offsetWidth;
+    const blockBottomsPx = blockBottomsCss.map((b) => b * cssToCanvas);
     document.body.removeChild(container);
 
     const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
-    const pageWidth = 555;   // A4 폭(595pt)에서 좌우 여백 뺀 값
-    const pageHeightPx = (842 / pageWidth) * canvas.width;  // 한 페이지분 캔버스 픽셀 높이
+    const pageWidth = 555;    // A4 폭(595pt)에서 좌우 여백(20pt×2) 뺀 값
+    const pageHeightPt = 802; // A4 높이(842pt)에서 상하 여백(20pt×2) 뺀 값
+    // canvas.width 기준으로 한 페이지분 캔버스 픽셀 높이 계산 (margin 제외)
+    const pageHeightPx = (pageHeightPt / pageWidth) * canvas.width;
     let renderedHeight = 0;
     let first = true;
     while (renderedHeight < canvas.height) {
-      const sliceHeight = Math.min(pageHeightPx, canvas.height - renderedHeight);
+      const maxBottom = Math.min(canvas.height, renderedHeight + pageHeightPx);
+      // 이 페이지 구간 안에서 블록 중간을 지나지 않는 가장 아래쪽 경계를 찾아 거기서 자른다.
+      // 블록 하나가 한 페이지보다 커서 안전한 경계가 없으면(예: 아주 긴 줄거리) 어쩔 수 없이 그대로 자른다.
+      const safeBottoms = blockBottomsPx.filter((b) => b > renderedHeight + 1 && b <= maxBottom);
+      const sliceEnd = safeBottoms.length > 0 ? safeBottoms[safeBottoms.length - 1] : maxBottom;
+      const sliceHeight = sliceEnd - renderedHeight;
       const sliceCanvas = document.createElement('canvas');
       sliceCanvas.width = canvas.width;
       sliceCanvas.height = sliceHeight;
@@ -349,7 +450,7 @@ export default function Home() {
       if (!first) pdf.addPage();
       const sliceHeightPt = sliceHeight * (pageWidth / canvas.width);
       pdf.addImage(sliceCanvas.toDataURL('image/png'), 'PNG', 20, 20, pageWidth, sliceHeightPt);
-      renderedHeight += sliceHeight;
+      renderedHeight = sliceEnd;
       first = false;
     }
     pdf.save(`${title}.pdf`);
@@ -419,6 +520,18 @@ export default function Home() {
 
   /* ── 리서치 탭: AI 전송 ── */
   async function sendResearch(next: Message[]) {
+    // "○○ 리서치해줘"처럼 특정 원작 조사 요청이면, 채팅 모델을 거치지 않고 곧바로 웹 검색으로 채운다.
+    const lastUser = next[next.length - 1];
+    const discoverTitle = lastUser?.role === 'user' ? parseDiscoverRequest(lastUser.content) : null;
+    if (discoverTitle) {
+      setResearchMsgs((prev) => [...prev, {
+        role: 'assistant',
+        content: `「${discoverTitle}」을(를) 웹에서 찾아 채워볼게요. 웹 검색이라 최대 30초 정도 걸릴 수 있어요 — 멈춘 게 아니니 조금만 기다려주세요 🔍`,
+      }]);
+      await runChatDiscover(discoverTitle);
+      setSaved(false);
+      return;
+    }
     try {
       const res = await fetch('/api/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -444,10 +557,55 @@ export default function Home() {
         });
       }
       setSaved(false);
+
+      // "○○ 리서치해줘"처럼 원작 자동조사를 요청받았으면, 이어서 웹 검색으로 필드를 채운다.
+      if (data.action?.type === 'discover' && data.action.title) {
+        await runChatDiscover(data.action.title);
+      }
     } catch (e: any) {
       const content = e?.message || '오류가 발생했습니다. 다시 시도해주세요.';
       setResearchMsgs((prev) => [...prev, { role: 'assistant', content }]);
     }
+  }
+
+  /* ── 채팅에서 촉발된 자동조사: 웹 검색으로 개요·줄거리 등을 채우고 결과를 채팅에 요약 ── */
+  async function runChatDiscover(rawTitle: string) {
+    const title = rawTitle.trim();
+    if (!title) return;
+    // 각색 작품으로 조사 중이라는 맥락 반영 + 원작명 확정
+    setResearchMode('adaptation');
+    setResearch((prev) => (prev.originalTitle ? prev : { ...prev, originalTitle: title }));
+
+    const result = await discoverFromTitle(title);
+    if (!result) return;  // discoverFromTitle이 이미 오류 alert 처리
+
+    if (!result.found) {
+      setResearchMsgs((prev) => [...prev, {
+        role: 'assistant',
+        content: `「${title}」을(를) 웹에서 찾지 못했어요. ${result.note || ''}\n제목이 정확한지 확인하거나, 원작 파일을 첨부해주시면 제가 직접 분석해서 채워드릴게요.`.trim(),
+      }]);
+      return;
+    }
+
+    // 채운 필드를 라벨로 정리해서 무엇이 반영됐는지 알려준다
+    const FIELD_LABELS: Partial<Record<keyof ResearchData, string>> = {
+      overviewAuthor: '작가', originalFormat: '원작 형식', overviewGenreStatus: '장르/연재 상태',
+      overviewPlatforms: '유통 플랫폼', overviewPremise: '핵심 설정', fullPlot: '전체 줄거리',
+      mainCharacters: '주요 캐릭터', similarWorks: '유사 작품', genreTrends: '장르 트렌드',
+      differentiation: '차별화 포인트',
+    };
+    const filled = (Object.keys(result.fields ?? {}) as (keyof ResearchData)[])
+      .filter((k) => result.fields[k] && FIELD_LABELS[k])
+      .map((k) => FIELD_LABELS[k]!);
+    const platformNames = (result.platforms ?? []).filter((p) => p.platform).map((p) => p.platform);
+
+    const parts = [`「${title}」을(를) 웹에서 찾아 오른쪽 리서치 정보를 채웠어요. 확인하고 맞으면 각 필드를 "확정"해주세요.`];
+    if (filled.length > 0) parts.push(`\n✅ 채운 항목: ${filled.join(', ')}`);
+    if (platformNames.length > 0) parts.push(`🔗 확인된 게재 플랫폼: ${platformNames.join(', ')}`);
+    parts.push(
+      '\n아직 비어 있는 조회수·평점·독자 반응은 제가 지어내지 않아요. 위 플랫폼 페이지에서 수치와 댓글을 복사해 🔗 "플랫폼 데이터 가져오기 도우미"에 붙여넣으면 정리해드릴게요.'
+    );
+    setResearchMsgs((prev) => [...prev, { role: 'assistant', content: parts.join('\n') }]);
   }
 
   /* ── 공통 전송 ── */
@@ -796,10 +954,15 @@ export default function Home() {
 
       const ext = (data.extracted ?? {}) as Partial<ResearchData> & { platforms?: { platform: string; views?: string; rating?: string }[] };
       const platforms = (ext.platforms ?? []).filter((p) => p.platform || p.views || p.rating);
-      // platforms는 별도 처리하므로 문자열 필드만 추림
+      // platforms/sentiment는 별도 처리하므로 문자열 필드만 추림
       const keys = (Object.keys(ext) as (keyof ResearchData)[]).filter((k) => k !== 'platformMetrics' && typeof ext[k] === 'string' && ext[k]);
+      // 감정 비율: 세 값이 숫자이고 합이 0보다 클 때만 유효로 인정
+      const s = ext.sentiment;
+      const validSentiment =
+        s && typeof s.positive === 'number' && typeof s.negative === 'number' && typeof s.neutral === 'number' &&
+        (s.positive + s.negative + s.neutral) > 0 ? s : null;
 
-      if (keys.length === 0 && platforms.length === 0) {
+      if (keys.length === 0 && platforms.length === 0 && !validSentiment) {
         alert('붙여넣은 텍스트에서 지표나 독자 반응을 찾지 못했어요. 작품 페이지나 댓글 화면의 내용인지 확인해주세요.');
         return false;
       }
@@ -807,6 +970,7 @@ export default function Home() {
       setResearch((prev) => {
         const u = { ...prev };
         for (const k of keys) (u as Record<string, unknown>)[k] = ext[k];
+        if (validSentiment) u.sentiment = validSentiment;
         // 추출한 플랫폼 지표는 기존 행에 이어 붙임 (같은 플랫폼명이면 값 갱신)
         if (platforms.length > 0) {
           const rows = [...prev.platformMetrics];
@@ -836,12 +1000,13 @@ export default function Home() {
     }
   }
 
-  /* ── 원작명으로 웹 검색해서 게재 플랫폼·개요 필드를 자동으로 찾아 채움 (항상 Claude Haiku + 웹 검색 사용) ── */
+  /* ── 원작명으로 웹 검색해서 게재 플랫폼·개요 필드를 자동으로 찾아 채움
+     (선택한 모델의 provider 안에서 저비용 모델 + 웹 검색 사용 — Gemini Flash / Claude Haiku / GPT-4o mini) ── */
   async function discoverFromTitle(title: string): Promise<DiscoverResult | null> {
     try {
       const res = await fetch('/api/analyze-source', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: title, mode: 'discover' }),
+        body: JSON.stringify({ text: title, model, mode: 'discover' }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -925,6 +1090,7 @@ export default function Home() {
         onNew={handleNew}
         onSelect={selectProject}
         onReorder={handleReorder}
+        onDuplicate={handleDuplicate}
       />
 
       {/* ── 중앙 + 우측 ── */}
@@ -1181,6 +1347,7 @@ export default function Home() {
                 <ResearchPanel
                   research={research}
                   statuses={researchStatuses}
+                  model={model}
                   onChange={handleResearchFieldChange}
                   onAnalyzeMetrics={analyzePastedMetrics}
                   onDiscover={discoverFromTitle}

@@ -51,6 +51,13 @@ export const defaultPlanningData: PlanningData = {
 
 export type PlanningStatuses = Record<string, FieldStatus | undefined>;
 
+// ── 독자 감정 비율 (AI가 댓글·리뷰를 분석해 산출, 도넛 차트용) ──────────
+export interface SentimentBreakdown {
+  positive: number;  // 긍정 % (0~100)
+  negative: number;  // 부정 %
+  neutral: number;   // 중립 %
+}
+
 // ── 플랫폼별 지표 (조회수·평점) — 플랫폼마다 한 행 ─────────────────
 export interface PlatformMetric {
   id: string;
@@ -77,6 +84,7 @@ export interface ResearchData {
   // 3. 독자 반응 분석 — 직접 수집한 리뷰/댓글 기반
   reactionPositive: string;     // 긍정 반응 키워드/요지
   reactionNegative: string;     // 부정 반응 키워드/요지
+  sentiment: SentimentBreakdown | null; // AI가 산출한 긍정/부정/중립 비율 (없으면 null)
   // 4. 독자층 프로파일 — 관측 가능한 신호 기반 정성 해석
   audienceProfile: string;
   // 5. 작품 요소/평가/근거요지
@@ -97,7 +105,7 @@ export const defaultResearchData: ResearchData = {
   originalTitle: '', overviewAuthor: '', originalFormat: '',
   overviewGenreStatus: '', overviewPlatforms: '', overviewPremise: '',
   platformMetrics: [], metricsOfficial: '', metricsInterpretation: '',
-  reactionPositive: '', reactionNegative: '',
+  reactionPositive: '', reactionNegative: '', sentiment: null,
   audienceProfile: '', elementEvaluation: '',
   adaptationInsights: '',
   similarWorks: '', genreTrends: '',
