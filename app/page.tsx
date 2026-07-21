@@ -52,6 +52,15 @@ function parseDiscoverRequest(text: string): string | null {
   return title.length >= 2 ? title : null;
 }
 
+// PDF 내보내기용: 긴 필드 값을 문장 단위 조각으로 나눈다 (문장 끝 부호·줄바꿈 뒤에서 끊음).
+// 각 조각을 span으로 감싸 페이지 분할 후보로 삼으면, 한 문단이 페이지보다 길어도 문장 사이에서 끊긴다.
+// 구분 부호는 앞 조각에 포함해서 원문 문자가 손실되지 않도록 한다 (white-space:pre-wrap로 렌더).
+function splitSentences(text: string): string[] {
+  const parts = text.match(/[\s\S]*?(?:[.!?。…]+|\n|$)/g);
+  const chunks = (parts ?? [text]).filter((p) => p.length > 0);
+  return chunks.length > 0 ? chunks : [text];
+}
+
 // ── 컴포넌트 ───────────────────────────────────────────────────
 export default function Home() {
   // 인증 상태
@@ -395,18 +404,20 @@ export default function Home() {
         <h2 class="pdf-block" style="font-size:13px; margin:24px 0 10px; background:#1e3a5f; color:#ffffff; padding:7px 12px; border-left:4px solid #059669;">${esc(s.heading)}</h2>
         ${s.fields.map((f) => `
           <p class="pdf-block" style="font-size:11px; color:#1e3a5f; font-weight:600; margin:8px 0 2px;">${esc(f.label)}</p>
-          ${f.value.split('\n').map((line) => `<p class="pdf-block" style="font-size:12px; line-height:1.7; margin:0 0 2px; white-space:pre-wrap;">${esc(line) || '&nbsp;'}</p>`).join('')}
-          <div style="margin-bottom:10px;"></div>
+          <p class="pdf-block" style="font-size:12px; line-height:1.7; margin:0 0 10px; white-space:pre-wrap;">${splitSentences(f.value).map((s2) => `<span class="pdf-break">${esc(s2)}</span>`).join('')}</p>
           ${f.label === '독자 감정 비율' ? sentimentDonutSvgForExport() : ''}
         `).join('')}
       `).join('')}
     `;
     document.body.appendChild(container);
 
-    // 페이지를 나눌 때 텍스트 중간이 잘리지 않도록, 각 블록(h1/h2/p/차트)의 하단 경계를
-    // 캡처 전 실제 DOM 레이아웃에서 미리 기록해둔다 (컨테이너가 position:fixed라 offsetTop은 컨테이너 기준)
-    const blockBottomsCss = Array.from(container.querySelectorAll<HTMLElement>('.pdf-block'))
-      .map((el) => el.offsetTop + el.offsetHeight)
+    // 페이지를 나눌 때 텍스트 중간이 잘리지 않도록, 안전하게 끊을 수 있는 지점(하단 경계)을 미리 모은다.
+    // - .pdf-block: 제목·라벨·차트 등 통째로 움직여야 하는 블록
+    // - .pdf-break: 문장 단위 span — 긴 문단도 문장 사이에서 끊을 수 있게 함
+    // span은 여러 줄에 걸치면 offsetTop이 부정확하므로 getBoundingClientRect로 컨테이너 상단 기준 좌표를 잰다.
+    const containerTop = container.getBoundingClientRect().top;
+    const blockBottomsCss = Array.from(container.querySelectorAll<HTMLElement>('.pdf-block, .pdf-break'))
+      .map((el) => el.getBoundingClientRect().bottom - containerTop)
       .sort((a, b) => a - b);
 
     // jsPDF의 doc.html() 네이티브 텍스트 렌더러는 기본 폰트(Helvetica)가 한글을 지원하지 않아
