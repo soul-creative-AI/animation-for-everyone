@@ -39,6 +39,19 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
+// "○○ 리서치해줘 / 조사해줘 / 찾아줘 / 검색해줘" 형태에서 조사할 원작명만 뽑아낸다.
+// 모델 판단에 의존하지 않고 코드가 직접 감지 → 자동조사를 확실히 촉발하기 위함.
+// 매칭되지 않으면(일반 대화) null 반환.
+function parseDiscoverRequest(text: string): string | null {
+  const t = text.trim();
+  // <제목> [에 대해/를/을/좀] (리서치|조사|서치|검색|자료조사|알아봐|찾아) [해줘/줘/...]
+  const re = /^(.+?)\s*(?:에\s*대해서?|에\s*대한|에\s*관해서?|를|을|좀)?\s*(?:리서치|조사|서치|검색|자료\s*조사|알아봐|찾아봐|찾아)\s*(?:좀)?\s*(?:해\s*줘|해주세요|해\s*주세요|해봐|해\s*봐|부탁(?:해요?|드려요|드립니다)?|줘|해\s*줄래|해도\s*돼|해\s*줄\s*수\s*있어)?\s*[.!?~]*$/;
+  const m = t.match(re);
+  if (!m) return null;
+  const title = m[1].trim().replace(/^['"“”「『<]+|['"“”」』>]+$/g, '').trim();
+  return title.length >= 2 ? title : null;
+}
+
 // ── 컴포넌트 ───────────────────────────────────────────────────
 export default function Home() {
   // 인증 상태
@@ -481,6 +494,18 @@ export default function Home() {
 
   /* ── 리서치 탭: AI 전송 ── */
   async function sendResearch(next: Message[]) {
+    // "○○ 리서치해줘"처럼 특정 원작 조사 요청이면, 채팅 모델을 거치지 않고 곧바로 웹 검색으로 채운다.
+    const lastUser = next[next.length - 1];
+    const discoverTitle = lastUser?.role === 'user' ? parseDiscoverRequest(lastUser.content) : null;
+    if (discoverTitle) {
+      setResearchMsgs((prev) => [...prev, {
+        role: 'assistant',
+        content: `「${discoverTitle}」을(를) 웹에서 찾아 채워볼게요. 잠시만요…`,
+      }]);
+      await runChatDiscover(discoverTitle);
+      setSaved(false);
+      return;
+    }
     try {
       const res = await fetch('/api/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
