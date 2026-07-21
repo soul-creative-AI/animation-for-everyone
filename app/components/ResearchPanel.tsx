@@ -157,6 +157,7 @@ interface Props {
   statuses: ResearchStatuses;
   model: ModelId;
   onChange: (key: keyof ResearchData, value: string) => void;
+  onToggleConfirm: (key: keyof ResearchData) => void;
   onAnalyzeMetrics: (text: string) => Promise<boolean>;
   onDiscover: (title: string) => Promise<DiscoverResult | null>;
   onApplyToPlanning: () => void;
@@ -295,7 +296,7 @@ function MetricsPasteHelper({
   );
 }
 
-export default function ResearchPanel({ research, statuses, model, onChange, onAnalyzeMetrics, onDiscover, onApplyToPlanning, onAddMetric, onUpdateMetric, onRemoveMetric }: Props) {
+export default function ResearchPanel({ research, statuses, model, onChange, onToggleConfirm, onAnalyzeMetrics, onDiscover, onApplyToPlanning, onAddMetric, onUpdateMetric, onRemoveMetric }: Props) {
   // 리서치 데이터가 채워져 있는지 확인 (문자열 필드 + 플랫폼 지표 배열)
   const hasResearchData =
     Object.values(research).some(v => typeof v === 'string' && v.trim() !== '') ||
@@ -357,6 +358,7 @@ export default function ResearchPanel({ research, statuses, model, onChange, onA
                       rows={rows}
                       placeholder={placeholder}
                       onChange={(v) => onChange(key, v)}
+                      onToggleConfirm={() => onToggleConfirm(key)}
                     />
                   ))}
                 </div>

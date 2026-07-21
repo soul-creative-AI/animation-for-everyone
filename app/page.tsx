@@ -680,7 +680,26 @@ export default function Home() {
 
   function handleResearchFieldChange(key: keyof ResearchData, value: string) {
     setResearch((prev) => ({ ...prev, [key]: value }));
-    setResearchStatuses((prev) => ({ ...prev, [key]: 'confirmed' }));
+    // 타이핑만으로는 확정하지 않음(확정=readOnly). AI 추정/변경 제안 배지는 손대면 제거.
+    setResearchStatuses((prev) => {
+      if (prev[key] === 'inferred' || prev[key] === 'suggested') {
+        const s = { ...prev };
+        delete s[key];
+        return s;
+      }
+      return prev;
+    });
+    setSaved(false);
+  }
+
+  // 리서치 필드 확정 토글 (확정하면 AI 추출·자동조사가 덮어쓰지 않고, 편집 잠금)
+  function toggleResearchConfirm(key: keyof ResearchData) {
+    setResearchStatuses((prev) => {
+      const s = { ...prev };
+      if (s[key] === 'confirmed') delete s[key];
+      else s[key] = 'confirmed';
+      return s;
+    });
     setSaved(false);
   }
 
@@ -1233,6 +1252,7 @@ export default function Home() {
                   statuses={researchStatuses}
                   model={model}
                   onChange={handleResearchFieldChange}
+                  onToggleConfirm={toggleResearchConfirm}
                   onAnalyzeMetrics={analyzePastedMetrics}
                   onDiscover={discoverFromTitle}
                   onApplyToPlanning={applyResearchToPlanning}
