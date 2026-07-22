@@ -158,6 +158,7 @@ interface Props {
   research: ResearchData;
   statuses: ResearchStatuses;
   model: ModelId;
+  locked?: boolean;  // 시작 잠금 — AI와 첫 대화 전까지 직접 입력 비활성
   onChange: (key: keyof ResearchData, value: string) => void;
   onToggleConfirm: (key: keyof ResearchData) => void;
   onAnalyzeMetrics: (text: string) => Promise<boolean>;
@@ -303,7 +304,7 @@ function MetricsPasteHelper({
   );
 }
 
-export default function ResearchPanel({ research, statuses, model, onChange, onToggleConfirm, onAnalyzeMetrics, onDiscover, onApplyToPlanning, onAddMetric, onUpdateMetric, onRemoveMetric, onAddCompetitor, onRemoveCompetitor, onUpdateCompetitor, onAnalyzeCompetitor }: Props) {
+export default function ResearchPanel({ research, statuses, model, locked = false, onChange, onToggleConfirm, onAnalyzeMetrics, onDiscover, onApplyToPlanning, onAddMetric, onUpdateMetric, onRemoveMetric, onAddCompetitor, onRemoveCompetitor, onUpdateCompetitor, onAnalyzeCompetitor }: Props) {
   // 리서치 데이터가 채워져 있는지 확인 (문자열 필드 + 플랫폼 지표 배열)
   const hasResearchData =
     Object.values(research).some(v => typeof v === 'string' && v.trim() !== '') ||
@@ -333,6 +334,11 @@ export default function ResearchPanel({ research, statuses, model, onChange, onT
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+        {locked && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+            <p className="text-[11px] text-amber-700 leading-relaxed">🔒 왼쪽 채팅에서 AI와 대화를 시작하면 직접 편집할 수 있어요</p>
+          </div>
+        )}
         {RESEARCH_SECTIONS.map((section) => (
           <div key={section.heading}>
             <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide pb-2 border-b border-gray-100">{section.heading}</p>
@@ -364,6 +370,7 @@ export default function ResearchPanel({ research, statuses, model, onChange, onT
                       status={statuses[key] ?? 'undecided'}
                       rows={rows}
                       placeholder={placeholder}
+                      disabled={locked}
                       onChange={(v) => onChange(key, v)}
                       onToggleConfirm={() => onToggleConfirm(key)}
                     />

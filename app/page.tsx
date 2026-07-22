@@ -149,6 +149,11 @@ export default function Home() {
   const messages    = tab === 'planning' ? planningMsgs    : researchMsgs;
   const setMessages = tab === 'planning' ? setPlanningMsgs : setResearchMsgs;
 
+  // 시작 잠금: AI와 첫 대화(사용자 메시지 1개) 전까지 정보 패널 직접 입력 비활성
+  // 파일 업로드도 채팅에 user 메시지로 남으므로 업로드해도 잠금이 풀린다
+  const planningLocked = !planningMsgs.some((m) => m.role === 'user');
+  const researchLocked = !researchMsgs.some((m) => m.role === 'user');
+
   /* ── 초기화: 인증 상태 확인 ── */
   useEffect(() => {
     async function checkAuth() {
@@ -1544,6 +1549,7 @@ export default function Home() {
                 <PlanningPanel
                   planning={planning}
                   statuses={planningStatuses}
+                  locked={planningLocked}
                   onChange={handlePlanningFieldChange}
                   onToggleConfirm={togglePlanningConfirm}
                 />
@@ -1552,6 +1558,7 @@ export default function Home() {
                   research={research}
                   statuses={researchStatuses}
                   model={model}
+                  locked={researchLocked}
                   onChange={handleResearchFieldChange}
                   onToggleConfirm={toggleResearchConfirm}
                   onAnalyzeMetrics={analyzePastedMetrics}

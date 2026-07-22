@@ -38,11 +38,12 @@ export const FIELDS: FieldConfig[] = [
 interface Props {
   planning: PlanningData;
   statuses: PlanningStatuses;
+  locked?: boolean;  // 시작 잠금 — AI와 첫 대화 전까지 직접 입력 비활성
   onChange: (key: keyof PlanningData, value: string) => void;
   onToggleConfirm: (key: keyof PlanningData) => void;
 }
 
-export default function PlanningPanel({ planning, statuses, onChange, onToggleConfirm }: Props) {
+export default function PlanningPanel({ planning, statuses, locked = false, onChange, onToggleConfirm }: Props) {
   return (
     <div className="w-full h-full flex flex-col bg-white overflow-hidden">
       <div className="px-5 py-4 border-b border-gray-100">
@@ -50,6 +51,11 @@ export default function PlanningPanel({ planning, statuses, onChange, onToggleCo
         <p className="text-xs text-gray-400 mt-0.5">대화하거나 자료를 올리면 자동으로 채워져요</p>
       </div>
       <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        {locked && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+            <p className="text-[11px] text-amber-700 leading-relaxed">🔒 왼쪽 채팅에서 AI와 대화를 시작하면 직접 편집할 수 있어요</p>
+          </div>
+        )}
         {FIELDS.map((f) => (
           <FieldItem
             key={f.key}
@@ -60,6 +66,7 @@ export default function PlanningPanel({ planning, statuses, onChange, onToggleCo
             placeholder={f.placeholder}
             type={f.type}
             options={f.options}
+            disabled={locked}
             onChange={(v) => onChange(f.key, v)}
             onToggleConfirm={() => onToggleConfirm(f.key)}
           />
