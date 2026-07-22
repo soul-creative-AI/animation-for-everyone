@@ -66,10 +66,12 @@ const PRICING: Record<string, { in: number; out: number }> = {
 // 웹 검색 도구 단가 (Claude): $10 / 1,000회 검색 = $0.01/회
 const WEB_SEARCH_COST_PER_USE = 0.01;
 
-// 안전 여유분: 실제 청구액이 이 추정치보다 낮게 나오도록, 항상 조금 더 크게 표시한다.
+// 안전 여유분: 실제 청구액이 이 추정치보다 낮게 나오도록, 항상 조금 더 크게 잡는다.
 // 예산 잠금(budgetGuard)이 이 값을 근거로 API 호출을 막기 때문에, 실제보다 적게 보이면
 // 예산을 이미 초과했는데도 계속 호출이 허용되는 위험이 있다 — 과소추정보다는 과대추정이 안전하다.
-const SAFETY_MARGIN = 1.3;
+// (1.3은 실제 대비 표시가 30% 부풀려져 오해를 줘서 1.1로 낮춤 — 토큰 단가 추정이
+//  실제와 거의 맞아 10% 여유면 잠금 안전성은 유지되면서 표시는 실제에 가까워짐)
+const SAFETY_MARGIN = 1.1;
 
 export function estimateCostUsd(model: string, usage: TokenUsage): number {
   const p = PRICING[model];
