@@ -8,7 +8,7 @@ import type {
   OriginalArchive, ArchiveVolume, ArchiveChapter,
 } from '@/types';
 import { defaultPlanningData, defaultResearchData } from '@/types';
-import { PLANNING_FIRST, RESEARCH_FIRST, getMockProposals } from '@/lib/mock';
+import { PLANNING_FIRST, RESEARCH_FIRST, ARCHIVE_FIRST, getMockProposals } from '@/lib/mock';
 import { MODELS, type ModelId } from '@/lib/models';
 import { createProject, duplicateProject } from '@/lib/project';
 import { type TokenUsage, estimateCostUsd } from '@/lib/usage';
@@ -62,6 +62,11 @@ function splitSentences(text: string): string[] {
   return chunks.length > 0 ? chunks : [text];
 }
 
+// 리서치 필드 key → 라벨 (문서 임포트 안내 메시지에서 채운 항목 이름 표시용)
+const RESEARCH_LABELS: Partial<Record<keyof ResearchData, string>> = Object.fromEntries(
+  RESEARCH_SECTIONS.flatMap((s) => s.groups.flatMap((g) => g.fields.map((f) => [f.key, f.label]))),
+);
+
 // ── 컴포넌트 ───────────────────────────────────────────────────
 export default function Home() {
   // 인증 상태
@@ -72,7 +77,7 @@ export default function Home() {
   const [authLoading, setAuthLoading] = useState(true);
 
   // Supabase에서 프로젝트 로드
-  const { projects, loading: projectsLoading, saveProject, deleteProject, createNewProject, reorderProjects } = useProjects(userId);
+  const { projects, loading: projectsLoading, ready: projectsReady, saveProject, deleteProject, createNewProject, reorderProjects } = useProjects(userId);
 
   // 프로바이더별 이번 결제 주기 예산 사용률 (모델 드롭다운 경고 표시용)
   const providerUsagePct = useProviderUsage();
@@ -100,6 +105,8 @@ export default function Home() {
 
   // 원작 아카이브 (권/화별 요약)
   const [archive, setArchive]                    = useState<OriginalArchive>({ volumes: [] });
+  const [archiveMsgs, setArchiveMsgs]            = useState<Message[]>([{ role: 'assistant', content: ARCHIVE_FIRST }]);
+  const [archiveLoading, setArchiveLoading]      = useState(false);
 
   // UI
   const [input, setInput]         = useState('');
@@ -133,6 +140,10 @@ export default function Home() {
   const bottomRef   = useRef<HTMLDivElement>(null);
   const modelRef    = useRef<HTMLDivElement>(null);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const firstProjectCreated = useRef(false);  // 첫 프로젝트 자동 생성 중복 방지
+  const docInputRef = useRef<HTMLInputElement>(null);  // 입력창 + 버튼용 파일 선택
+  const [uploadingDoc, setUploadingDoc] = useState(false);  // 자료 업로드 분석 중
+  const [inputDragOver, setInputDragOver] = useState(false);  // 입력창에 파일 드래그 중
 
   // 현재 탭 메시지
   const messages    = tab === 'planning' ? planningMsgs    : researchMsgs;
@@ -159,12 +170,28 @@ export default function Home() {
     checkAuth();
   }, []);
 
-  /* ── 프로젝트 로드 후 첫 번째 선택 ── */
+  /* ── 프로젝트 로드 후 첫 번째 선택 ──
+     프로젝트가 하나도 없으면(첫 로그인 등) 자동 생성 —
+     currentId가 비어 있으면 자동저장이 조용히 무시되고 수동 저장도 실패하기 때문.
+     반드시 projectsReady(로드 완료)일 때만 판단 — 로드 전 빈 목록을 "0개"로 오해해
+     새로고침마다 빈 프로젝트가 생기던 버그를 막는다. */
   useEffect(() => {
-    if (projects.length > 0 && !currentId) {
-      applyProject(projects[0]);
+    if (!userId || !projectsReady) return;
+    if (projects.length > 0) {
+      if (!currentId) applyProject(projects[0]);
+    } else if (!currentId && !firstProjectCreated.current) {
+      firstProjectCreated.current = true;
+      const fresh = createProject();
+      createNewProject(fresh)
+        .then(() => applyProject(fresh))
+        .catch((e) => {
+          firstProjectCreated.current = false;
+          console.error('Initial project create failed:', e);
+          alert(`첫 프로젝트 생성에 실패했습니다: ${e?.message ?? '알 수 없는 오류'}`);
+        });
     }
-  }, [projects]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects, projectsReady, userId]);
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
@@ -185,7 +212,7 @@ export default function Home() {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, planningMsgs, planning, planningStatuses, researchMsgs, research, researchStatuses, researchMode, uploadedSources, pendingChanges, archive]);
+  }, [title, planningMsgs, planning, planningStatuses, researchMsgs, research, researchStatuses, researchMode, uploadedSources, pendingChanges, archive, archiveMsgs]);
 
   /* ── 프로젝트 로드 ── */
   function applyProject(p: Project) {
@@ -204,6 +231,7 @@ export default function Home() {
     setPendingChanges([...p.pendingChanges]);
     // 구버전 프로젝트엔 archive가 없으므로 기본값으로 병합
     setArchive(p.archive ?? { volumes: [] });
+    setArchiveMsgs(p.archiveMessages?.length ? [...p.archiveMessages] : [{ role: 'assistant', content: ARCHIVE_FIRST }]);
     setSaved(true);
   }
 
@@ -233,9 +261,12 @@ export default function Home() {
   }
 
   async function handleSave() {
+    // currentId가 비면(예외 상황 방어) 새 id를 만들어 새 프로젝트로 저장 — 빈 id로 upsert하면 uuid 오류로 실패
+    const id = currentId || crypto.randomUUID();
+    if (!currentId) setCurrentId(id);
     const now = new Date().toISOString();
     const updated: Project = {
-      id: currentId,
+      id,
       title,
       createdAt: projects.find((p) => p.id === currentId)?.createdAt || now,
       updatedAt: now,
@@ -251,13 +282,15 @@ export default function Home() {
       uploadedSources: [...uploadedSources],
       pendingChanges: [...pendingChanges],
       archive: { volumes: archive.volumes.map((v) => ({ ...v, chapters: [...v.chapters] })) },
+      archiveMessages: archiveMsgs,
     };
     try {
       await saveProject(updated);
       setSaved(true);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Save failed:', e);
-      alert('저장에 실패했습니다');
+      // 원인 메시지를 같이 보여줘야 사용자가 문제를 전달할 수 있음 (예: RLS 거부, 네트워크 오류)
+      alert(`저장에 실패했습니다: ${e?.message ?? '알 수 없는 오류'}`);
     }
   }
 
@@ -631,6 +664,29 @@ export default function Home() {
     await sendMessageText(text);
   }
 
+  /* ── 원작 아카이브 탭 Q&A: "~한 장면 몇 화야?"를 아카이브 인덱스 근거로 답함 ── */
+  async function sendArchiveQuestion(text: string) {
+    if (!text.trim() || archiveLoading) return;
+    const next: Message[] = [...archiveMsgs, { role: 'user', content: text.trim() }];
+    setArchiveMsgs(next);
+    setArchiveLoading(true);
+    setSaved(false);
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: next, model, context: 'archive', archiveData: archive }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      recordUsage('archive-chat', data.usage);
+      setArchiveMsgs((prev) => [...prev, { role: 'assistant', content: data.text }]);
+    } catch (e: any) {
+      setArchiveMsgs((prev) => [...prev, { role: 'assistant', content: e?.message || '오류가 발생했습니다. 다시 시도해주세요.' }]);
+    } finally {
+      setArchiveLoading(false);
+    }
+  }
+
   /* ── 기획 변경 적용 ── */
   function applyChange(fieldKey: keyof PlanningData, value: string) {
     setPlanning((prev) => ({ ...prev, [fieldKey]: value }));
@@ -846,6 +902,109 @@ export default function Home() {
     } catch (e: any) {
       alert(e?.message || '자동 정리 중 오류가 발생했어요. 다시 시도해주세요.');
       return false;
+    }
+  }
+
+  /* ── 기획 탭: 문서 업로드(PDF/TXT) → 기획·리서치 빈 필드 자동 채우기 ──
+     기획서든 리서치 자료든, 예전에 내보낸(export) 파일이든 넣으면 문서에 담긴 항목이
+     각 탭(기획/리서치)의 빈칸에 채워진다. 이미 쓴 값·확정 필드는 보존한다. */
+  async function fillFromDoc(file: File): Promise<boolean> {
+    try {
+      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+      const body: { model: ModelId; mode: 'doc-import'; text?: string; pdfBase64?: string } = { model, mode: 'doc-import' };
+      if (isPdf) body.pdfBase64 = await fileToBase64(file);
+      else body.text = await file.text();
+      if (!body.pdfBase64 && !body.text?.trim()) {
+        alert('파일에서 내용을 읽지 못했어요. PDF나 텍스트 파일(.txt, .md)인지 확인해주세요.');
+        return false;
+      }
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      recordUsage('doc-import', data.usage, data.usedModel as ModelId | undefined);
+
+      const imported = (data.imported ?? {}) as {
+        planning?: Partial<Record<keyof PlanningData, string>>;
+        research?: Partial<Record<keyof ResearchData, string>>;
+      };
+
+      // ── 기획 필드 채우기 (빈 필드만, workType은 enum 값 검증) ──
+      const pExt = { ...(imported.planning ?? {}) };
+      const validWorkTypes: WorkType[] = ['undecided', 'original', 'adaptation', 'series', 'feature'];
+      if (pExt.workType && !validWorkTypes.includes(pExt.workType as WorkType)) delete pExt.workType;
+      const pKeys = (Object.keys(pExt) as (keyof PlanningData)[]).filter((k) => {
+        if (!pExt[k] || planningStatuses[k] === 'confirmed') return false;
+        if (k === 'workType') return planning.workType === 'undecided' && pExt.workType !== 'undecided';
+        return !String(planning[k] ?? '').trim();
+      });
+      if (pKeys.length > 0) {
+        setPlanning((prev) => {
+          const u = { ...prev };
+          for (const k of pKeys) (u as Record<string, string>)[k] = pExt[k]!;
+          return u;
+        });
+        setPlanningStatuses((prev) => {
+          const s = { ...prev };
+          for (const k of pKeys) s[k] = 'inferred';
+          return s;
+        });
+      }
+
+      // ── 리서치 필드 채우기 (문자열 필드만, 빈 필드만) ──
+      const rExt = (imported.research ?? {}) as Partial<Record<keyof ResearchData, string>>;
+      const rKeys = (Object.keys(rExt) as (keyof ResearchData)[]).filter((k) =>
+        rExt[k] && typeof rExt[k] === 'string' &&
+        researchStatuses[k] !== 'confirmed' && !String(research[k] ?? '').trim(),
+      );
+      if (rKeys.length > 0) {
+        setResearch((prev) => {
+          const u = { ...prev };
+          for (const k of rKeys) if (!String(prev[k] ?? '').trim()) (u as Record<string, unknown>)[k] = rExt[k];
+          return u;
+        });
+        setResearchStatuses((prev) => {
+          const s = { ...prev };
+          for (const k of rKeys) s[k] = 'inferred';
+          return s;
+        });
+      }
+
+      if (pKeys.length === 0 && rKeys.length === 0) {
+        setPlanningMsgs((prev) => [...prev, {
+          role: 'assistant',
+          content: `문서(${file.name})를 읽었지만 새로 채울 빈 항목이 없었어요. (이미 채워져 있거나 확정된 항목은 건드리지 않아요)`,
+        }]);
+        return true;
+      }
+      setSaved(false);
+
+      // 어떤 탭의 무엇이 채워졌는지 안내
+      const pLabels = pKeys.map((k) => PLANNING_FIELDS.find((f) => f.key === k)?.label ?? k);
+      const rLabels = rKeys.map((k) => RESEARCH_LABELS[k] ?? k);
+      const parts = [`문서(${file.name})에서 항목을 채웠어요.`];
+      if (pLabels.length > 0) parts.push(`\n📋 기획: ${pLabels.join(', ')}`);
+      if (rLabels.length > 0) parts.push(`\n🔍 리서치: ${rLabels.join(', ')}`);
+      parts.push('\n각 탭에서 확인하고, 맞는 내용은 확정해주세요.');
+      setPlanningMsgs((prev) => [...prev, { role: 'assistant', content: parts.join('\n') }]);
+      return true;
+    } catch (e: any) {
+      alert(e?.message || '문서 분석 중 오류가 발생했어요. 다시 시도해주세요.');
+      return false;
+    }
+  }
+
+  // 입력창 왼쪽 + 버튼: 파일 선택 → 자료 업로드(fillFromDoc). 기획·리서치 탭 공통.
+  async function handleDocPick(file: File | undefined | null) {
+    if (!file || uploadingDoc) return;
+    setUploadingDoc(true);
+    try {
+      await fillFromDoc(file);
+    } finally {
+      setUploadingDoc(false);
+      if (docInputRef.current) docInputRef.current.value = '';
     }
   }
 
@@ -1100,6 +1259,9 @@ export default function Home() {
               onUpdateChapter={updateArchiveChapter}
               onRemoveChapter={removeArchiveChapter}
               onAutoSplit={autoSplitVolume}
+              messages={archiveMsgs}
+              chatLoading={archiveLoading}
+              onAsk={sendArchiveQuestion}
             />
           </div>
         ) : (
@@ -1170,8 +1332,16 @@ export default function Home() {
               <div ref={bottomRef} />
             </div>
 
-            {/* 입력 영역 */}
-            <div className="px-6 py-4 bg-white border-t border-gray-200 shrink-0">
+            {/* 입력 영역 (파일을 끌어다 놓으면 자료 업로드) */}
+            <div
+              className={`px-6 py-4 bg-white border-t shrink-0 transition-colors ${inputDragOver ? 'border-emerald-400 bg-emerald-50/50' : 'border-gray-200'}`}
+              onDragOver={(e) => { if (!uploadingDoc) { e.preventDefault(); setInputDragOver(true); } }}
+              onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setInputDragOver(false); }}
+              onDrop={(e) => { e.preventDefault(); setInputDragOver(false); handleDocPick(e.dataTransfer.files?.[0]); }}
+            >
+              {inputDragOver && (
+                <p className="text-[11px] font-semibold text-emerald-600 mb-2 text-center">📄 여기에 파일을 놓으면 자료 업로드 (PDF·TXT)</p>
+              )}
               {/* 모델 선택 + 사용량 보기 */}
               <div className="flex items-center gap-3 mb-2">
                 <div className="relative" ref={modelRef}>
@@ -1215,6 +1385,28 @@ export default function Home() {
               </div>
 
               <div className="flex gap-2 items-end">
+                {/* 자료 업로드(+): 기획서·리서치 자료·예전에 내보낸 파일을 올리면 빈 항목이 채워짐 */}
+                <button
+                  onClick={() => docInputRef.current?.click()}
+                  disabled={uploadingDoc || loading}
+                  title="자료 업로드 — 기획서·리서치 자료·예전에 내보낸 파일(PDF·TXT)을 올리면 기획·리서치 빈 항목을 자동으로 채워요"
+                  className="w-11 h-11 flex items-center justify-center shrink-0 rounded-xl border border-gray-200 bg-gray-50 text-gray-500 hover:text-emerald-600 hover:border-emerald-300 disabled:opacity-40 disabled:cursor-wait transition-colors"
+                >
+                  {uploadingDoc ? (
+                    <span className="w-4 h-4 border-2 border-gray-300 border-t-emerald-500 rounded-full animate-spin" />
+                  ) : (
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                    </svg>
+                  )}
+                </button>
+                <input
+                  ref={docInputRef}
+                  type="file"
+                  accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
+                  className="hidden"
+                  onChange={(e) => handleDocPick(e.target.files?.[0])}
+                />
                 <textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}

@@ -1,6 +1,6 @@
 'use client';
-import { useMemo, useState } from 'react';
-import type { OriginalArchive, ArchiveVolume, ArchiveChapter } from '@/types';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { OriginalArchive, ArchiveVolume, ArchiveChapter, Message } from '@/types';
 import { MODELS, type ModelId } from '@/lib/models';
 
 interface Props {
@@ -13,6 +13,10 @@ interface Props {
   onRemoveChapter: (volumeId: string, chapterId: string) => void;
   // 원문(파일/텍스트)을 AI로 화 단위 자동 분할해 새 권으로 추가 (권 번호는 자동)
   onAutoSplit: (opts: { file?: File; text?: string }) => Promise<boolean>;
+  // 아카이브 Q&A 채팅 ("~한 장면 몇 화야?")
+  messages: Message[];
+  chatLoading: boolean;
+  onAsk: (text: string) => Promise<void>;
 }
 
 // 검색어 강조
@@ -161,9 +165,21 @@ function ChapterCard({ chapter, onUpdate, onRemove }: {
 
 export default function ArchivePanel({
   archive, model, onModelChange, onUpdateVolume, onRemoveVolume, onUpdateChapter, onRemoveChapter, onAutoSplit,
+  messages, chatLoading, onAsk,
 }: Props) {
   const [query, setQuery] = useState('');
   const [openVolumes, setOpenVolumes] = useState<Record<string, boolean>>({});
+  const [chatInput, setChatInput] = useState('');
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  async function submitChat() {
+    const text = chatInput.trim();
+    if (!text || chatLoading) return;
+    setChatInput('');
+    await onAsk(text);
+  }
 
   const totalChapters = useMemo(
     () => archive.volumes.reduce((n, v) => n + v.chapters.length, 0),
@@ -199,7 +215,7 @@ export default function ArchivePanel({
           placeholder="🔍 제목·요약·인물·장면 검색 (예: 첫 각성, 카일렌)"
           className={`${inputCls} mt-3`}
         />
-        <p className="text-[10px] text-gray-400 mt-2">💬 &ldquo;~한 장면 몇 화야?&rdquo; 같은 질문은 <b>리서치 탭 채팅</b>에서 물어보면 이 아카이브를 근거로 답해드려요.</p>
+        <p className="text-[10px] text-gray-400 mt-2">💬 &ldquo;~한 장면 몇 화야?&rdquo; 같은 질문은 아래 <b>아카이브 채팅</b>에서 물어보면 이 아카이브를 근거로 답해드려요.</p>
       </div>
 
       {/* 본문 */}
@@ -266,6 +282,72 @@ export default function ArchivePanel({
             })}
           </div>
         )}
+      </div>
+
+      {/* 아카이브 Q&A 채팅 (아래 고정) */}
+      <div className="shrink-0 border-t border-gray-200 bg-gray-50/60 flex flex-col" style={{ height: 300 }}>
+        <div className="px-6 pt-3 pb-1 shrink-0 flex items-start justify-between gap-2">
+          <div>
+            <p className="text-xs font-bold text-gray-700">💬 아카이브 채팅</p>
+            <p className="text-[10px] text-gray-400 mt-0.5">정리된 권/화를 근거로 답해요. 예: &ldquo;주인공이 각성하는 장면 몇 화야?&rdquo;</p>
+          </div>
+          <select
+            value={model}
+            onChange={(e) => onModelChange(e.target.value as ModelId)}
+            disabled={chatLoading}
+            title="답변에 사용할 모델"
+            className="shrink-0 text-[11px] border border-gray-200 rounded-lg px-2 py-1 bg-white text-gray-600 outline-none focus:border-emerald-400 disabled:opacity-50"
+          >
+            {MODELS.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* 메시지 목록 */}
+        <div className="flex-1 overflow-y-auto px-6 py-2 space-y-3">
+          {messages.map((m, i) => (
+            <div key={i} className={`flex items-end gap-2 ${m.role === 'user' ? 'flex-row-reverse' : ''}`}>
+              {m.role === 'assistant' && (
+                <div className="w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[9px] font-bold shrink-0">AI</div>
+              )}
+              <div className={`max-w-[75%] px-3 py-2 rounded-2xl text-xs leading-relaxed whitespace-pre-wrap shadow-sm ${
+                m.role === 'user' ? 'bg-emerald-500 text-white rounded-br-sm' : 'bg-white text-gray-700 border border-gray-100 rounded-bl-sm'
+              }`}>
+                {m.content}
+              </div>
+            </div>
+          ))}
+          {chatLoading && (
+            <div className="flex items-end gap-2">
+              <div className="w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[9px] font-bold shrink-0">AI</div>
+              <div className="bg-white border border-gray-100 px-3 py-2 rounded-2xl rounded-bl-sm shadow-sm">
+                <div className="flex gap-1">
+                  {[0, 150, 300].map((d) => (
+                    <span key={d} className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: `${d}ms` }} />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+          <div ref={chatBottomRef} />
+        </div>
+
+        {/* 입력 */}
+        <div className="px-6 py-3 shrink-0 flex gap-2 items-end">
+          <textarea
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitChat(); } }}
+            rows={1}
+            placeholder="아카이브에 물어보기... (Shift+Enter로 줄바꿈)"
+            className="flex-1 resize-none bg-white border border-gray-200 rounded-xl px-3.5 py-2.5 text-xs text-gray-800 placeholder-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
+          />
+          <button onClick={submitChat} disabled={!chatInput.trim() || chatLoading}
+            className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-xl transition-colors shrink-0">
+            전송
+          </button>
+        </div>
       </div>
     </div>
   );

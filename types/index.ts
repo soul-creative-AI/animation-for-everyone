@@ -196,4 +196,5 @@ export interface Project {
   pendingChanges: PendingChange[];
   // 원작 아카이브 (권/화별 요약)
   archive: OriginalArchive;
+  archiveMessages: Message[];  // 아카이브 탭 Q&A 대화 ("~한 장면 몇 화야?")
 }
