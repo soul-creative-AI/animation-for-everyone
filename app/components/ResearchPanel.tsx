@@ -2,7 +2,8 @@
 import { useEffect, useState } from 'react';
 import FieldItem from './FieldItem';
 import PlatformMetricsEditor from './PlatformMetricsEditor';
-import type { ResearchData, ResearchStatuses, PlatformMetric, SentimentBreakdown } from '@/types';
+import CompetitorAnalysis from './CompetitorAnalysis';
+import type { ResearchData, ResearchStatuses, PlatformMetric, SentimentBreakdown, CompetitorWork } from '@/types';
 import type { ModelId } from '@/lib/models';
 import { PROVIDER_OF_MODEL, type Provider } from '@/lib/budgets';
 
@@ -149,6 +150,7 @@ export interface DiscoverResult {
   found: boolean;
   platforms: { platform: string; url: string }[];
   fields: Partial<ResearchData>;
+  similarWorksList?: { title: string; reason?: string }[];  // 자동 생성된 유사작품 리스트
   note: string;
 }
 
@@ -164,6 +166,11 @@ interface Props {
   onAddMetric: () => void;
   onUpdateMetric: (id: string, patch: Partial<PlatformMetric>) => void;
   onRemoveMetric: (id: string) => void;
+  // 경쟁작/레퍼런스 분석
+  onAddCompetitor: (title: string) => void;
+  onRemoveCompetitor: (id: string) => void;
+  onUpdateCompetitor: (id: string, patch: Partial<CompetitorWork>) => void;
+  onAnalyzeCompetitor: (id: string) => Promise<void>;
 }
 
 // 원작명으로 일반 웹 검색 (AI가 못 찾았을 때의 수동 폴백)
@@ -296,7 +303,7 @@ function MetricsPasteHelper({
   );
 }
 
-export default function ResearchPanel({ research, statuses, model, onChange, onToggleConfirm, onAnalyzeMetrics, onDiscover, onApplyToPlanning, onAddMetric, onUpdateMetric, onRemoveMetric }: Props) {
+export default function ResearchPanel({ research, statuses, model, onChange, onToggleConfirm, onAnalyzeMetrics, onDiscover, onApplyToPlanning, onAddMetric, onUpdateMetric, onRemoveMetric, onAddCompetitor, onRemoveCompetitor, onUpdateCompetitor, onAnalyzeCompetitor }: Props) {
   // 리서치 데이터가 채워져 있는지 확인 (문자열 필드 + 플랫폼 지표 배열)
   const hasResearchData =
     Object.values(research).some(v => typeof v === 'string' && v.trim() !== '') ||
@@ -361,6 +368,16 @@ export default function ResearchPanel({ research, statuses, model, onChange, onT
                       onToggleConfirm={() => onToggleConfirm(key)}
                     />
                   ))}
+                  {section.heading === '시장 리서치' && (
+                    <CompetitorAnalysis
+                      competitors={research.competitors ?? []}
+                      analyzeModelLabel={DISCOVER_MODEL_LABEL[PROVIDER_OF_MODEL[model]]}
+                      onAdd={onAddCompetitor}
+                      onRemove={onRemoveCompetitor}
+                      onUpdate={onUpdateCompetitor}
+                      onAnalyze={onAnalyzeCompetitor}
+                    />
+                  )}
                 </div>
               ))}
             </div>

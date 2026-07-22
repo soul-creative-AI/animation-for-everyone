@@ -68,6 +68,23 @@ export interface PlatformMetric {
   comments: string;  // 이 플랫폼의 댓글·리뷰 (페이지에서 복사한 것)
 }
 
+// ── 경쟁작/레퍼런스 분석 — 작품마다 한 카드 ─────────────────────
+export interface CompetitorWork {
+  id: string;
+  title: string;                          // 작품명
+  reason: string;                         // 왜 유사한가 (리스트 생성 시 한 줄)
+  addedBy: 'auto' | 'user';               // 자동 생성 / 직접 추가
+  status: 'pending' | 'analyzing' | 'done' | 'error';  // 상세 분석 상태
+  // ── 상세 분석 결과 (웹 검색 기반) ──
+  summary: string;         // 한 줄 요약/포지션
+  strengths: string;       // 장점 (이 작품이 잘한 것)
+  cliches: string;         // 클리셰 (이 장르 반복 패턴 중 이 작품이 쓴 것)
+  marketPosition: string;  // 시장 포지션 (타깃·플랫폼·성과 위치)
+  avoid: string;           // 피해야 할 것 (받은 비판·한계)
+  leverage: string;        // 활용 방안 (우리 기획에 가져올 점)
+  differentiation: string; // 차별화 방안 (우리 작품이 다르게 갈 지점)
+}
+
 // ── 리서치 데이터 (원작 IP 분석 보고서 구조) ─────────────────────
 export interface ResearchData {
   // 1. 작품 개요 — AI 분석 가능 (원작 텍스트 기반)
@@ -94,6 +111,7 @@ export interface ResearchData {
   // 시장 리서치 (공통)
   similarWorks: string; genreTrends: string;
   differentiation: string; planningPoints: string;
+  competitors: CompetitorWork[];  // 경쟁작/레퍼런스 작품별 분석 카드
   // 원작 콘텐츠 분석 (각색 작업용)
   fullPlot: string;
   episodeSummaries: string; mainCharacters: string; characterRelations: string;
@@ -110,6 +128,7 @@ export const defaultResearchData: ResearchData = {
   adaptationInsights: '',
   similarWorks: '', genreTrends: '',
   differentiation: '', planningPoints: '',
+  competitors: [],
   fullPlot: '', episodeSummaries: '',
   mainCharacters: '', characterRelations: '', keyEvents: '',
   mustKeep: '', compressible: '', removable: '',

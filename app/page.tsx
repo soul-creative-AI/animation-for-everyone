@@ -5,7 +5,7 @@ import type {
   Message, PlanningData, PlanningStatuses,
   ResearchData, ResearchStatuses, ResearchMode, PlatformMetric,
   ProjectTab, Project, UploadedSource, PendingChange,
-  OriginalArchive, ArchiveVolume, ArchiveChapter,
+  OriginalArchive, ArchiveVolume, ArchiveChapter, CompetitorWork,
 } from '@/types';
 import { defaultPlanningData, defaultResearchData } from '@/types';
 import { PLANNING_FIRST, RESEARCH_FIRST, ARCHIVE_FIRST, getMockProposals } from '@/lib/mock';
@@ -359,6 +359,22 @@ export default function Home() {
             label: '플랫폼별 지표',
             value: rows.length > 0 ? rows.join('\n') : '확인 필요 (플랫폼 수치 미수집)',
           });
+        }
+        // 시장 리서치 섹션엔 분석 완료된 경쟁작 카드를 작품별로 붙여서 내보냄
+        if (s.heading === '시장 리서치') {
+          const analyzed = (research.competitors ?? []).filter((c) => c.status === 'done');
+          for (const c of analyzed) {
+            const rows = [
+              c.summary && `요약: ${c.summary}`,
+              c.strengths && `장점: ${c.strengths}`,
+              c.cliches && `클리셰: ${c.cliches}`,
+              c.marketPosition && `시장 포지션: ${c.marketPosition}`,
+              c.avoid && `피해야 할 것: ${c.avoid}`,
+              c.leverage && `활용 방안: ${c.leverage}`,
+              c.differentiation && `차별화 방안: ${c.differentiation}`,
+            ].filter(Boolean) as string[];
+            if (rows.length > 0) fields.push({ label: `경쟁작 분석 — ${c.title}`, value: rows.join('\n') });
+          }
         }
         // 독자 반응 섹션엔 감정 비율(도넛 차트 데이터)을 텍스트로도 남김 — 내보내기에서 사라지지 않도록
         if (s.groups.some((g) => g.label === '독자 반응 분석') && research.sentiment) {
@@ -784,6 +800,87 @@ export default function Home() {
     setSaved(false);
   }
 
+  /* ── 경쟁작/레퍼런스 분석 ── */
+  function addCompetitor(title: string, reason = '', addedBy: 'auto' | 'user' = 'user') {
+    const t = title.trim();
+    if (!t) return;
+    setResearch((prev) => {
+      const existing = prev.competitors ?? [];
+      if (existing.some((c) => c.title === t)) return prev;  // 같은 작품 중복 방지
+      return {
+        ...prev,
+        competitors: [...existing, {
+          id: crypto.randomUUID(), title: t, reason, addedBy, status: 'pending' as const,
+          summary: '', strengths: '', cliches: '', marketPosition: '', avoid: '', leverage: '', differentiation: '',
+        }],
+      };
+    });
+    setSaved(false);
+  }
+
+  function removeCompetitor(id: string) {
+    setResearch((prev) => ({ ...prev, competitors: (prev.competitors ?? []).filter((c) => c.id !== id) }));
+    setSaved(false);
+  }
+
+  function updateCompetitor(id: string, patch: Partial<CompetitorWork>) {
+    setResearch((prev) => ({
+      ...prev,
+      competitors: (prev.competitors ?? []).map((c) => (c.id === id ? { ...c, ...patch } : c)),
+    }));
+    setSaved(false);
+  }
+
+  // 경쟁작 분석에 함께 보낼 "우리 작품 정보" — 리서치·기획에서 채워진 핵심만 추려서
+  function ourWorkContext(): string {
+    const lines: string[] = [];
+    if (research.originalTitle) lines.push(`원작명: ${research.originalTitle}`);
+    if (planning.title && planning.title !== research.originalTitle) lines.push(`기획 제목: ${planning.title}`);
+    const genre = research.overviewGenreStatus || planning.genre;
+    if (genre) lines.push(`장르: ${genre}`);
+    if (research.overviewPremise) lines.push(`핵심 설정: ${research.overviewPremise}`);
+    if (planning.logline) lines.push(`로그라인: ${planning.logline}`);
+    const plot = planning.synopsis || research.fullPlot;
+    if (plot) lines.push(`줄거리: ${plot.slice(0, 600)}`);  // 토큰 절약을 위해 앞부분만
+    const target = planning.targetAudience || research.audienceProfile;
+    if (target) lines.push(`타깃: ${target}`);
+    if (research.differentiation) lines.push(`차별화 방향: ${research.differentiation}`);
+    return lines.join('\n');
+  }
+
+  // 경쟁작 1개를 웹 검색으로 분석 (provider별 저비용 모델 — 자동조사와 동일 비용 구조)
+  async function analyzeCompetitor(id: string) {
+    const comp = (research.competitors ?? []).find((c) => c.id === id);
+    if (!comp || comp.status === 'analyzing') return;
+    updateCompetitor(id, { status: 'analyzing' });
+    try {
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: comp.title, model, mode: 'competitor', context: ourWorkContext() }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      recordUsage('competitor-analyze', data.usage, data.usedModel as ModelId | undefined);
+
+      const c = (data.competitor ?? {}) as Record<string, unknown>;
+      const pick = (k: string) => (typeof c[k] === 'string' ? (c[k] as string) : '');
+      if (!c.found) {
+        updateCompetitor(id, { status: 'error' });
+        alert(`「${comp.title}」을(를) 웹에서 찾지 못했어요. ${pick('note')}`.trim());
+        return;
+      }
+      updateCompetitor(id, {
+        status: 'done',
+        summary: pick('summary'), strengths: pick('strengths'), cliches: pick('cliches'),
+        marketPosition: pick('marketPosition'), avoid: pick('avoid'),
+        leverage: pick('leverage'), differentiation: pick('differentiation'),
+      });
+    } catch (e: any) {
+      updateCompetitor(id, { status: 'error' });
+      alert(e?.message || '경쟁작 분석 중 오류가 발생했어요. 다시 시도해주세요.');
+    }
+  }
+
   /* ── 원작 아카이브: 권/화 수정·삭제 (추가는 원문 자동 정리로만) ── */
   function updateArchiveVolume(id: string, patch: Partial<ArchiveVolume>) {
     setArchive((prev) => ({
@@ -1171,6 +1268,11 @@ export default function Home() {
         });
         setSaved(false);
       }
+
+      // 자동조사에서 찾은 유사작품을 경쟁작 분석 리스트에 자동 추가 (같은 검색에 얹혀서 추가 비용 없음)
+      for (const w of result.similarWorksList ?? []) {
+        if (w.title?.trim()) addCompetitor(w.title, w.reason ?? '', 'auto');
+      }
       return result;
     } catch (e: any) {
       alert(e?.message || '검색 중 오류가 발생했어요. 다시 시도해주세요.');
@@ -1458,6 +1560,10 @@ export default function Home() {
                   onAddMetric={addPlatformMetric}
                   onUpdateMetric={updatePlatformMetric}
                   onRemoveMetric={removePlatformMetric}
+                  onAddCompetitor={addCompetitor}
+                  onRemoveCompetitor={removeCompetitor}
+                  onUpdateCompetitor={updateCompetitor}
+                  onAnalyzeCompetitor={analyzeCompetitor}
                 />
               )}
             </div>
