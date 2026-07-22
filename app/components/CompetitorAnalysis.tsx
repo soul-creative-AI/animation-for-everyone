@@ -1,13 +1,16 @@
 'use client';
 import { useState } from 'react';
 import type { CompetitorWork } from '@/types';
+import { MODELS, type ModelId } from '@/lib/models';
 
 // 경쟁작/레퍼런스 분석 — 패널에는 컴팩트한 작품 리스트만 두고, 상세 분석은 모달로 열어본다.
 // (우측 패널이 좁아서 작품마다 6개 분석 필드를 그대로 펼치면 너무 길어지기 때문)
 
 interface Props {
   competitors: CompetitorWork[];
-  analyzeModelLabel: string;  // 분석에 쓰일 저비용 모델 이름 (비용 안내용)
+  model: ModelId;
+  onModelChange: (m: ModelId) => void;
+  analyzeModelLabel: string;  // 실제 검색에 쓰일 저비용 모델 이름 (선택한 모델의 provider 기준)
   onAdd: (title: string) => void;
   onRemove: (id: string) => void;
   onUpdate: (id: string, patch: Partial<CompetitorWork>) => void;
@@ -29,7 +32,7 @@ const STATUS_ICON: Record<CompetitorWork['status'], string> = {
   pending: '○', analyzing: '⏳', done: '✅', error: '❌',
 };
 
-export default function CompetitorAnalysis({ competitors, analyzeModelLabel, onAdd, onRemove, onUpdate, onAnalyze }: Props) {
+export default function CompetitorAnalysis({ competitors, model, onModelChange, analyzeModelLabel, onAdd, onRemove, onUpdate, onAnalyze }: Props) {
   const [newTitle, setNewTitle] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);  // 상세 모달이 열린 작품 id
 
@@ -58,6 +61,21 @@ export default function CompetitorAnalysis({ competitors, analyzeModelLabel, onA
       <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
         자동조사 시 유사작품이 자동으로 추가돼요. 레퍼런스 작품을 직접 추가해도 돼요. 각 작품의 &ldquo;분석&rdquo;을 누르면 장점·클리셰·시장 포지션·활용/차별화 방안을 조사해요.
       </p>
+
+      {/* 분석 모델 선택 — 선택한 모델의 provider 안에서 저비용 검색 모델을 씀 */}
+      <div className="flex items-center gap-2 mt-2">
+        <span className="text-[10px] text-gray-500 shrink-0">분석 모델</span>
+        <select
+          value={model}
+          onChange={(e) => onModelChange(e.target.value as ModelId)}
+          className="text-[11px] border border-gray-200 rounded-lg px-2 py-1 bg-white text-gray-700 outline-none focus:border-emerald-400"
+        >
+          {MODELS.map((m) => (
+            <option key={m.id} value={m.id}>{m.label}</option>
+          ))}
+        </select>
+        <span className="text-[9px] text-gray-400 shrink-0" title="실제 웹 검색은 선택한 모델과 같은 provider의 저비용 모델로 실행돼요">→ {analyzeModelLabel}</span>
+      </div>
 
       {/* 작품 리스트 (컴팩트 — 한 줄씩) */}
       {competitors.length > 0 && (

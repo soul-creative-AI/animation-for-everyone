@@ -34,6 +34,28 @@ function isOverloadError(e: unknown): boolean {
   return status === 503 || status === 429;
 }
 
+// 모델 출력에서 JSON 객체를 견고하게 추출한다.
+// 1) ```json 코드펜스 우선, 2) 없으면 첫 '{'부터 중괄호 균형을 맞춰 최상위 객체를 잘라냄.
+// 그리디 정규식(/\{[\s\S]*\}/)은 앞뒤 잡담·검색 인용에 딸려온 중괄호에 쉽게 깨져서 이 방식으로 대체.
+function extractJsonBlock(text: string): string | null {
+  const fence = text.match(/```json\s*([\s\S]*?)\s*```/);
+  if (fence) return fence[1].trim();
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') inStr = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
+  }
+  return null;  // 균형 잡힌 닫는 괄호가 없음 (출력이 잘렸을 가능성)
+}
+
 // 원작 텍스트에서 IP 분석 보고서 필드를 추출하는 프롬프트
 const SYSTEM_PROMPT = `당신은 애니메이션 각색을 돕는 원작 IP 분석 전문가입니다. 사용자가 업로드한 원작 텍스트를 읽고, 원작 IP 분석 보고서에 필요한 정보를 추출하세요.
 
@@ -261,7 +283,8 @@ async function callClaudeSearch(query: string, modelId: string, system: string):
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const response = await client.messages.create({
     model: modelId,
-    max_tokens: 2048,
+    // 경쟁작 분석은 필드가 많아 2048로는 JSON이 잘려 파싱 실패 → 넉넉히 상향
+    max_tokens: 4096,
     system,
     // Haiku는 동적 필터링(코드 실행 기반 호출)을 지원 안 해서 direct 호출로 강제
     tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 3, allowed_callers: ['direct'] } as any],
@@ -269,6 +292,7 @@ async function callClaudeSearch(query: string, modelId: string, system: string):
     tool_choice: { type: 'tool', name: 'web_search' },
     messages: [{ role: 'user', content: query }],
   });
+  if (response.stop_reason === 'max_tokens') console.warn('[analyze-source] Claude Search hit max_tokens — 출력 잘림 가능');
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
     .map((b) => b.text)
@@ -493,19 +517,25 @@ export async function POST(req: NextRequest) {
         context?.trim() || '(아직 정리된 정보 없음 — 일반적인 장르 관점에서 분석)',
       ].join('\n');
       const result = await runWebSearch(query, COMPETITOR_PROMPT, `${PROVIDER_OF_MODEL[discoverModel.alias]} Competitor`);
-      const jsonMatch = result.text.match(/```json\s*([\s\S]*?)\s*```/) ?? result.text.match(/\{[\s\S]*\}/);
+      const jsonStr = extractJsonBlock(result.text);
       let competitor: Record<string, unknown> = { found: false, note: '결과를 파싱하지 못했어요.' };
-      if (jsonMatch) {
-        try { competitor = JSON.parse(jsonMatch[1] ?? jsonMatch[0]); } catch {}
+      let parsed = false;
+      if (jsonStr) {
+        try { competitor = JSON.parse(jsonStr); parsed = true; } catch {}
       }
-      console.log(`[competitor] title="${text}" found=${competitor.found}`);
+      // 파싱 실패 시 원인 진단을 위해 모델 원본 출력을 남긴다 (잘림·비JSON 응답 등)
+      if (!parsed) {
+        console.warn(`[competitor] title="${text}" 파싱 실패. 출력 길이=${result.text.length}, 앞 500자:\n`, result.text.slice(0, 500));
+      } else {
+        console.log(`[competitor] title="${text}" found=${competitor.found}`);
+      }
       return NextResponse.json({ competitor, usage: result.usage, usedModel: discoverModel.alias });
     }
 
     if (mode === 'discover' && discoverModel) {
       const provider = PROVIDER_OF_MODEL[discoverModel.alias];
       const result = await runWebSearch(discoverQuery(text!), DISCOVER_PROMPT, `${provider} Discover`);
-      const jsonMatch = result.text.match(/```json\s*([\s\S]*?)\s*```/) ?? result.text.match(/\{[\s\S]*\}/);
+      const jsonStr = extractJsonBlock(result.text);
       let discover: {
         found: boolean;
         platforms: { platform: string; url: string }[];
@@ -513,8 +543,8 @@ export async function POST(req: NextRequest) {
         similarWorksList?: { title: string; reason?: string }[];
         note: string;
       } = { found: false, platforms: [], fields: {}, similarWorksList: [], note: '결과를 파싱하지 못했어요.' };
-      if (jsonMatch) {
-        try { discover = JSON.parse(jsonMatch[1] ?? jsonMatch[0]); } catch {}
+      if (jsonStr) {
+        try { discover = JSON.parse(jsonStr); } catch {}
       }
       const filledCount = Object.values(discover.fields ?? {}).filter(Boolean).length;
       console.log(`[discover] title="${text}" provider=${provider} found=${discover.found} platforms=${discover.platforms?.length ?? 0} 채운필드=${filledCount}. 원본 앞 400자:\n`, result.text.slice(0, 400));

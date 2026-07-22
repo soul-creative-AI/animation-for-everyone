@@ -1558,6 +1558,7 @@ export default function Home() {
                   research={research}
                   statuses={researchStatuses}
                   model={model}
+                  onModelChange={setModel}
                   locked={researchLocked}
                   onChange={handleResearchFieldChange}
                   onToggleConfirm={toggleResearchConfirm}
