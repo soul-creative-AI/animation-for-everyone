@@ -167,10 +167,26 @@ export default function ArchivePanel({
   archive, model, onModelChange, onUpdateVolume, onRemoveVolume, onUpdateChapter, onRemoveChapter, onAutoSplit,
   messages, chatLoading, onAsk,
 }: Props) {
+  type ArchiveView = 'list' | 'search' | 'upload' | 'chat';
+  const [view, setView] = useState<ArchiveView>('list');
   const [query, setQuery] = useState('');
   const [openVolumes, setOpenVolumes] = useState<Record<string, boolean>>({});
   const [chatInput, setChatInput] = useState('');
   const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  // 업로드 기록 — 무엇을 올렸고 완료/실패했는지 서브탭을 오가도 볼 수 있게 유지
+  type UploadRecord = { id: string; name: string; status: 'uploading' | 'done' | 'error' };
+  const [uploadRecords, setUploadRecords] = useState<UploadRecord[]>([]);
+
+  // onAutoSplit을 감싸 업로드 진행/완료/실패 상태를 기록으로 남긴다
+  async function trackedAutoSplit(opts: { file?: File; text?: string }): Promise<boolean> {
+    const id = crypto.randomUUID();
+    const name = opts.file?.name ?? '붙여넣은 텍스트';
+    setUploadRecords((u) => [...u, { id, name, status: 'uploading' }]);
+    const ok = await onAutoSplit(opts);
+    setUploadRecords((u) => u.map((r) => (r.id === id ? { ...r, status: ok ? 'done' : 'error' } : r)));
+    return ok;
+  }
 
   useEffect(() => { chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -201,154 +217,234 @@ export default function ArchivePanel({
 
   const inputCls = 'w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all';
 
+  const VIEW_TABS: { id: ArchiveView; label: string }[] = [
+    { id: 'list',   label: '📚 아카이브' },
+    { id: 'search', label: '🔍 검색' },
+    { id: 'upload', label: '📄 업로드' },
+    { id: 'chat',   label: '💬 채팅' },
+  ];
+
   return (
     <div className="w-full h-full flex flex-col bg-white overflow-hidden">
-      {/* 헤더 */}
-      <div className="px-6 py-4 border-b border-gray-100 shrink-0">
+      {/* 헤더 + 서브탭 */}
+      <div className="px-6 pt-4 border-b border-gray-100 shrink-0">
         <div>
           <h2 className="text-sm font-bold text-gray-800">원작 아카이브</h2>
           <p className="text-xs text-gray-400 mt-0.5">원문을 올리면 화별로 자동 정리돼요 · 총 {archive.volumes.length}권 {totalChapters}화</p>
         </div>
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="🔍 제목·요약·인물·장면 검색 (예: 첫 각성, 카일렌)"
-          className={`${inputCls} mt-3`}
-        />
-        <p className="text-[10px] text-gray-400 mt-2">💬 &ldquo;~한 장면 몇 화야?&rdquo; 같은 질문은 아래 <b>아카이브 채팅</b>에서 물어보면 이 아카이브를 근거로 답해드려요.</p>
-      </div>
-
-      {/* 본문 */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
-        {matches !== null ? (
-          /* 검색 결과 */
-          <div className="space-y-2">
-            <p className="text-[11px] text-gray-500 mb-2">검색 결과 {matches.length}개</p>
-            {matches.length === 0 && <p className="text-xs text-gray-400">일치하는 화가 없어요.</p>}
-            {matches.map(({ volume, chapter }) => (
-              <div key={chapter.id} className="rounded-lg border border-gray-200 bg-white p-3">
-                <p className="text-[11px] font-semibold text-emerald-600">
-                  {volume.number || '?'}권 {chapter.number || '?'}화
-                  {chapter.title && <span className="text-gray-700 font-normal"> · <Highlight text={chapter.title} query={query} /></span>}
-                </p>
-                {chapter.summary && <p className="text-xs text-gray-600 mt-1 leading-relaxed"><Highlight text={chapter.summary} query={query} /></p>}
-                {(chapter.characters || chapter.sceneTags) && (
-                  <p className="text-[10px] text-gray-400 mt-1.5">
-                    {chapter.characters && <span>👤 <Highlight text={chapter.characters} query={query} /></span>}
-                    {chapter.characters && chapter.sceneTags && <span className="mx-1">·</span>}
-                    {chapter.sceneTags && <span>🎬 <Highlight text={chapter.sceneTags} query={query} /></span>}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : (
-          /* 정리 화면 */
-          <div className="space-y-3">
-            <AutoSplitBox model={model} onModelChange={onModelChange} onAutoSplit={onAutoSplit} />
-            {archive.volumes.length === 0 && (
-              <div className="text-center py-10 text-gray-400">
-                <p className="text-sm">아직 정리된 원작이 없어요.</p>
-                <p className="text-xs mt-1">위에서 원문 파일을 올리면 AI가 화별로 자동 정리해요.</p>
-              </div>
-            )}
-            {archive.volumes.map((v) => {
-              const isOpen = openVolumes[v.id] ?? true;
-              return (
-                <div key={v.id} className="rounded-xl border border-gray-200 overflow-hidden">
-                  <div className="flex items-center gap-2 px-3 py-2.5 bg-gray-50">
-                    <button onClick={() => setOpenVolumes((s) => ({ ...s, [v.id]: !isOpen }))} className="text-gray-400 hover:text-gray-600 text-xs shrink-0 w-4">{isOpen ? '▾' : '▸'}</button>
-                    <input value={v.number} onChange={(e) => onUpdateVolume(v.id, { number: e.target.value })} placeholder="권" className="w-12 bg-white border border-gray-200 rounded px-2 py-1 text-xs font-semibold text-emerald-700 outline-none focus:border-emerald-400" />
-                    <span className="text-xs text-gray-400 shrink-0">권</span>
-                    <input value={v.title} onChange={(e) => onUpdateVolume(v.id, { title: e.target.value })} placeholder="권 제목 (선택)" className="flex-1 bg-white border border-gray-200 rounded px-2 py-1 text-xs text-gray-700 outline-none focus:border-emerald-400" />
-                    <span className="text-[10px] text-gray-400 shrink-0">{v.chapters.length}화</span>
-                    <button onClick={() => onRemoveVolume(v.id)} className="text-gray-300 hover:text-red-500 text-xs shrink-0" title="권 삭제">✕</button>
-                  </div>
-                  {isOpen && (
-                    <div className="p-3 space-y-2">
-                      {v.chapters.length === 0 && <p className="text-[11px] text-gray-400 text-center py-2">이 권에는 정리된 화가 없어요.</p>}
-                      {v.chapters.map((c) => (
-                        <ChapterCard
-                          key={c.id}
-                          chapter={c}
-                          onUpdate={(patch) => onUpdateChapter(v.id, c.id, patch)}
-                          onRemove={() => onRemoveChapter(v.id, c.id)}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* 아카이브 Q&A 채팅 (아래 고정) */}
-      <div className="shrink-0 border-t border-gray-200 bg-gray-50/60 flex flex-col" style={{ height: 300 }}>
-        <div className="px-6 pt-3 pb-1 shrink-0 flex items-start justify-between gap-2">
-          <div>
-            <p className="text-xs font-bold text-gray-700">💬 아카이브 채팅</p>
-            <p className="text-[10px] text-gray-400 mt-0.5">정리된 권/화를 근거로 답해요. 예: &ldquo;주인공이 각성하는 장면 몇 화야?&rdquo;</p>
-          </div>
-          <select
-            value={model}
-            onChange={(e) => onModelChange(e.target.value as ModelId)}
-            disabled={chatLoading}
-            title="답변에 사용할 모델"
-            className="shrink-0 text-[11px] border border-gray-200 rounded-lg px-2 py-1 bg-white text-gray-600 outline-none focus:border-emerald-400 disabled:opacity-50"
-          >
-            {MODELS.map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* 메시지 목록 */}
-        <div className="flex-1 overflow-y-auto px-6 py-2 space-y-3">
-          {messages.map((m, i) => (
-            <div key={i} className={`flex items-end gap-2 ${m.role === 'user' ? 'flex-row-reverse' : ''}`}>
-              {m.role === 'assistant' && (
-                <div className="w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[9px] font-bold shrink-0">AI</div>
-              )}
-              <div className={`max-w-[75%] px-3 py-2 rounded-2xl text-xs leading-relaxed whitespace-pre-wrap shadow-sm ${
-                m.role === 'user' ? 'bg-emerald-500 text-white rounded-br-sm' : 'bg-white text-gray-700 border border-gray-100 rounded-bl-sm'
-              }`}>
-                {m.content}
-              </div>
-            </div>
+        <div className="flex items-center gap-1 mt-3">
+          {VIEW_TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setView(t.id)}
+              className={`px-3 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px ${
+                view === t.id ? 'text-emerald-600 border-emerald-500' : 'text-gray-400 border-transparent hover:text-gray-600'
+              }`}
+            >
+              {t.label}
+            </button>
           ))}
-          {chatLoading && (
-            <div className="flex items-end gap-2">
-              <div className="w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[9px] font-bold shrink-0">AI</div>
-              <div className="bg-white border border-gray-100 px-3 py-2 rounded-2xl rounded-bl-sm shadow-sm">
-                <div className="flex gap-1">
-                  {[0, 150, 300].map((d) => (
-                    <span key={d} className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: `${d}ms` }} />
-                  ))}
-                </div>
-              </div>
+        </div>
+      </div>
+
+      {/* ── 아카이브 목록 ── */}
+      {view === 'list' && (
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+          {archive.volumes.length === 0 && (
+            <div className="text-center py-10 text-gray-400">
+              <p className="text-sm">아직 정리된 원작이 없어요.</p>
+              <p className="text-xs mt-1">&ldquo;📄 업로드&rdquo; 탭에서 원문 파일을 올리면 AI가 화별로 자동 정리해요.</p>
             </div>
           )}
-          <div ref={chatBottomRef} />
+          {archive.volumes.map((v) => {
+            const isOpen = openVolumes[v.id] ?? true;
+            return (
+              <div key={v.id} className="rounded-xl border border-gray-200 overflow-hidden">
+                <div className="flex items-center gap-2 px-3 py-2.5 bg-gray-50">
+                  <button onClick={() => setOpenVolumes((s) => ({ ...s, [v.id]: !isOpen }))} className="text-gray-400 hover:text-gray-600 text-xs shrink-0 w-4">{isOpen ? '▾' : '▸'}</button>
+                  <input value={v.number} onChange={(e) => onUpdateVolume(v.id, { number: e.target.value })} placeholder="권" className="w-12 bg-white border border-gray-200 rounded px-2 py-1 text-xs font-semibold text-emerald-700 outline-none focus:border-emerald-400" />
+                  <span className="text-xs text-gray-400 shrink-0">권</span>
+                  <input value={v.title} onChange={(e) => onUpdateVolume(v.id, { title: e.target.value })} placeholder="권 제목 (선택)" className="flex-1 bg-white border border-gray-200 rounded px-2 py-1 text-xs text-gray-700 outline-none focus:border-emerald-400" />
+                  <span className="text-[10px] text-gray-400 shrink-0">{v.chapters.length}화</span>
+                  <button onClick={() => onRemoveVolume(v.id)} className="text-gray-300 hover:text-red-500 text-xs shrink-0" title="권 삭제">✕</button>
+                </div>
+                {isOpen && (
+                  <div className="p-3 space-y-2">
+                    {/* 권 전체 요약 (화별 요약과 별개) */}
+                    <div className="rounded-lg border border-emerald-100 bg-emerald-50/50 p-2.5">
+                      <label className="text-[10px] font-semibold text-emerald-700">📖 권 전체 요약</label>
+                      <textarea
+                        value={v.summary ?? ''}
+                        onChange={(e) => onUpdateVolume(v.id, { summary: e.target.value })}
+                        placeholder="이 권 전체를 아우르는 요약 (업로드 시 자동으로 채워져요)"
+                        rows={3}
+                        className="mt-1 w-full bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs text-gray-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all resize-none"
+                      />
+                    </div>
+                    {v.chapters.length > 0 && <p className="text-[10px] font-semibold text-gray-400 pt-1">화별 정리</p>}
+                    {v.chapters.length === 0 && <p className="text-[11px] text-gray-400 text-center py-2">이 권에는 정리된 화가 없어요.</p>}
+                    {v.chapters.map((c) => (
+                      <ChapterCard
+                        key={c.id}
+                        chapter={c}
+                        onUpdate={(patch) => onUpdateChapter(v.id, c.id, patch)}
+                        onRemove={() => onRemoveChapter(v.id, c.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
+      )}
 
-        {/* 입력 */}
-        <div className="px-6 py-3 shrink-0 flex gap-2 items-end">
-          <textarea
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitChat(); } }}
-            rows={1}
-            placeholder="아카이브에 물어보기... (Shift+Enter로 줄바꿈)"
-            className="flex-1 resize-none bg-white border border-gray-200 rounded-xl px-3.5 py-2.5 text-xs text-gray-800 placeholder-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
+      {/* ── 검색 ── */}
+      {view === 'search' && (
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            autoFocus
+            placeholder="🔍 제목·요약·인물·장면 검색 (예: 첫 각성, 카일렌)"
+            className={inputCls}
           />
-          <button onClick={submitChat} disabled={!chatInput.trim() || chatLoading}
-            className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-xl transition-colors shrink-0">
-            전송
-          </button>
+          <div className="mt-3 space-y-2">
+            {matches === null ? (
+              <p className="text-xs text-gray-400">검색어를 입력하면 일치하는 화를 찾아드려요.</p>
+            ) : (
+              <>
+                <p className="text-[11px] text-gray-500 mb-2">검색 결과 {matches.length}개</p>
+                {matches.length === 0 && <p className="text-xs text-gray-400">일치하는 화가 없어요.</p>}
+                {matches.map(({ volume, chapter }) => (
+                  <div key={chapter.id} className="rounded-lg border border-gray-200 bg-white p-3">
+                    <p className="text-[11px] font-semibold text-emerald-600">
+                      {volume.number || '?'}권 {chapter.number || '?'}화
+                      {chapter.title && <span className="text-gray-700 font-normal"> · <Highlight text={chapter.title} query={query} /></span>}
+                    </p>
+                    {chapter.summary && <p className="text-xs text-gray-600 mt-1 leading-relaxed"><Highlight text={chapter.summary} query={query} /></p>}
+                    {(chapter.characters || chapter.sceneTags) && (
+                      <p className="text-[10px] text-gray-400 mt-1.5">
+                        {chapter.characters && <span>👤 <Highlight text={chapter.characters} query={query} /></span>}
+                        {chapter.characters && chapter.sceneTags && <span className="mx-1">·</span>}
+                        {chapter.sceneTags && <span>🎬 <Highlight text={chapter.sceneTags} query={query} /></span>}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* ── 업로드 ── */}
+      {view === 'upload' && (
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+          <AutoSplitBox model={model} onModelChange={onModelChange} onAutoSplit={trackedAutoSplit} />
+
+          {/* 업로드 기록 — 무엇을 올렸고 완료/실패했는지 */}
+          {uploadRecords.length > 0 && (
+            <div className="rounded-xl border border-gray-200 bg-white p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[11px] font-semibold text-gray-600">업로드 기록</p>
+                <button
+                  onClick={() => setUploadRecords((u) => u.filter((r) => r.status === 'uploading'))}
+                  className="text-[10px] text-gray-400 hover:text-gray-600"
+                >
+                  기록 지우기
+                </button>
+              </div>
+              <div className="space-y-1.5">
+                {uploadRecords.map((r) => (
+                  <div key={r.id} className="flex items-center gap-2 text-xs">
+                    <span className="shrink-0">
+                      {r.status === 'uploading' ? '⏳' : r.status === 'done' ? '✅' : '❌'}
+                    </span>
+                    <span className="flex-1 truncate text-gray-700" title={r.name}>{r.name}</span>
+                    <span className={`shrink-0 text-[10px] font-semibold ${
+                      r.status === 'uploading' ? 'text-amber-600' : r.status === 'done' ? 'text-emerald-600' : 'text-red-500'
+                    }`}>
+                      {r.status === 'uploading' ? '정리 중...' : r.status === 'done' ? '완료' : '실패'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-400 mt-2">완료된 원문은 &ldquo;📚 아카이브&rdquo; 탭에서 화별 정리를 확인하세요.</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── 아카이브 채팅 ── */}
+      {view === 'chat' && (
+        <div className="flex-1 min-h-0 flex flex-col bg-gray-50/60">
+          <div className="px-6 pt-3 pb-1 shrink-0">
+            <p className="text-[10px] text-gray-400">정리된 권/화를 근거로 답해요. 예: &ldquo;주인공이 각성하는 장면 몇 화야?&rdquo;</p>
+          </div>
+
+          {/* 메시지 목록 */}
+          <div className="flex-1 overflow-y-auto px-6 py-2 space-y-3">
+            {messages.map((m, i) => (
+              <div key={i} className={`flex items-end gap-2 ${m.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                {m.role === 'assistant' && (
+                  <div className="w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[9px] font-bold shrink-0">AI</div>
+                )}
+                <div className={`max-w-[75%] px-3 py-2 rounded-2xl text-xs leading-relaxed whitespace-pre-wrap shadow-sm ${
+                  m.role === 'user' ? 'bg-emerald-500 text-white rounded-br-sm' : 'bg-white text-gray-700 border border-gray-100 rounded-bl-sm'
+                }`}>
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            {chatLoading && (
+              <div className="flex items-end gap-2">
+                <div className="w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[9px] font-bold shrink-0">AI</div>
+                <div className="bg-white border border-gray-100 px-3 py-2 rounded-2xl rounded-bl-sm shadow-sm">
+                  <div className="flex gap-1">
+                    {[0, 150, 300].map((d) => (
+                      <span key={d} className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: `${d}ms` }} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={chatBottomRef} />
+          </div>
+
+          {/* 입력 (모델 선택은 입력창 위 — 다른 탭 채팅과 통일) */}
+          <div className="px-6 py-3 shrink-0 border-t border-gray-200 bg-white">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[11px] text-gray-400">모델</span>
+              <select
+                value={model}
+                onChange={(e) => onModelChange(e.target.value as ModelId)}
+                disabled={chatLoading}
+                title="답변에 사용할 모델"
+                className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white text-gray-700 outline-none focus:border-emerald-400 disabled:opacity-50"
+              >
+                {MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex gap-2 items-end">
+              <textarea
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitChat(); } }}
+                rows={1}
+                placeholder="아카이브에 물어보기... (Shift+Enter로 줄바꿈)"
+                className="flex-1 resize-none bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-xs text-gray-800 placeholder-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
+              />
+              <button onClick={submitChat} disabled={!chatInput.trim() || chatLoading}
+                className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-xl transition-colors shrink-0">
+                전송
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

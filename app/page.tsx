@@ -876,6 +876,7 @@ export default function Home() {
       recordUsage('archive-split', data.usage, data.usedModel as ModelId | undefined);
 
       const chapters = (data.chapters ?? []) as { number?: string; title?: string; summary?: string; characters?: string; sceneTags?: string }[];
+      const volumeSummary = typeof data.volumeSummary === 'string' ? data.volumeSummary : '';
       if (chapters.length === 0) {
         alert('원문에서 화를 나누지 못했어요. 한 권 분량인지, 형식이 너무 특이하지 않은지 확인해주세요. (분량이 아주 크면 앞부분만 인식될 수 있어요)');
         return false;
@@ -885,6 +886,7 @@ export default function Home() {
           id: crypto.randomUUID(),
           number: String(prev.volumes.length + 1),
           title: '',
+          summary: volumeSummary,
           chapters: chapters.map((c, i) => ({
             id: crypto.randomUUID(),
             number: String(c.number ?? i + 1),
@@ -909,6 +911,8 @@ export default function Home() {
      기획서든 리서치 자료든, 예전에 내보낸(export) 파일이든 넣으면 문서에 담긴 항목이
      각 탭(기획/리서치)의 빈칸에 채워진다. 이미 쓴 값·확정 필드는 보존한다. */
   async function fillFromDoc(file: File): Promise<boolean> {
+    // 결과 안내는 현재 보고 있는 탭의 채팅에 남긴다 (업로드는 두 탭 공통 + 버튼에서 촉발)
+    const appendChat = tab === 'planning' ? setPlanningMsgs : setResearchMsgs;
     try {
       const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
       const body: { model: ModelId; mode: 'doc-import'; text?: string; pdfBase64?: string } = { model, mode: 'doc-import' };
@@ -973,7 +977,7 @@ export default function Home() {
       }
 
       if (pKeys.length === 0 && rKeys.length === 0) {
-        setPlanningMsgs((prev) => [...prev, {
+        appendChat((prev) => [...prev, {
           role: 'assistant',
           content: `문서(${file.name})를 읽었지만 새로 채울 빈 항목이 없었어요. (이미 채워져 있거나 확정된 항목은 건드리지 않아요)`,
         }]);
@@ -988,7 +992,7 @@ export default function Home() {
       if (pLabels.length > 0) parts.push(`\n📋 기획: ${pLabels.join(', ')}`);
       if (rLabels.length > 0) parts.push(`\n🔍 리서치: ${rLabels.join(', ')}`);
       parts.push('\n각 탭에서 확인하고, 맞는 내용은 확정해주세요.');
-      setPlanningMsgs((prev) => [...prev, { role: 'assistant', content: parts.join('\n') }]);
+      appendChat((prev) => [...prev, { role: 'assistant', content: parts.join('\n') }]);
       return true;
     } catch (e: any) {
       alert(e?.message || '문서 분석 중 오류가 발생했어요. 다시 시도해주세요.');
@@ -999,6 +1003,9 @@ export default function Home() {
   // 입력창 왼쪽 + 버튼: 파일 선택 → 자료 업로드(fillFromDoc). 기획·리서치 탭 공통.
   async function handleDocPick(file: File | undefined | null) {
     if (!file || uploadingDoc) return;
+    // 업로드한 파일을 현재 탭 채팅에 사용자 메시지로 표시 (사용자가 무엇을 올렸는지 알 수 있게)
+    const appendChat = tab === 'planning' ? setPlanningMsgs : setResearchMsgs;
+    appendChat((prev) => [...prev, { role: 'user', content: `📎 파일 업로드: ${file.name}` }]);
     setUploadingDoc(true);
     try {
       await fillFromDoc(file);

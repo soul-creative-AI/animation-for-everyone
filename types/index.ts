@@ -132,6 +132,7 @@ export interface ArchiveVolume {
   id: string;
   number: string;    // 권 표기 (예: "1", "1권")
   title: string;
+  summary: string;   // 권 전체 요약 (화별 요약과 별개로 이 권을 아우르는 요약)
   chapters: ArchiveChapter[];
 }
 
