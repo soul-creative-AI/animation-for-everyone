@@ -158,6 +158,7 @@ interface Props {
   research: ResearchData;
   statuses: ResearchStatuses;
   model: ModelId;
+  onModelChange: (m: ModelId) => void;
   locked?: boolean;  // 시작 잠금 — AI와 첫 대화 전까지 직접 입력 비활성
   onChange: (key: keyof ResearchData, value: string) => void;
   onToggleConfirm: (key: keyof ResearchData) => void;
@@ -304,7 +305,7 @@ function MetricsPasteHelper({
   );
 }
 
-export default function ResearchPanel({ research, statuses, model, locked = false, onChange, onToggleConfirm, onAnalyzeMetrics, onDiscover, onApplyToPlanning, onAddMetric, onUpdateMetric, onRemoveMetric, onAddCompetitor, onRemoveCompetitor, onUpdateCompetitor, onAnalyzeCompetitor }: Props) {
+export default function ResearchPanel({ research, statuses, model, onModelChange, locked = false, onChange, onToggleConfirm, onAnalyzeMetrics, onDiscover, onApplyToPlanning, onAddMetric, onUpdateMetric, onRemoveMetric, onAddCompetitor, onRemoveCompetitor, onUpdateCompetitor, onAnalyzeCompetitor }: Props) {
   // 리서치 데이터가 채워져 있는지 확인 (문자열 필드 + 플랫폼 지표 배열)
   const hasResearchData =
     Object.values(research).some(v => typeof v === 'string' && v.trim() !== '') ||
@@ -378,6 +379,8 @@ export default function ResearchPanel({ research, statuses, model, locked = fals
                   {section.heading === '시장 리서치' && (
                     <CompetitorAnalysis
                       competitors={research.competitors ?? []}
+                      model={model}
+                      onModelChange={onModelChange}
                       analyzeModelLabel={DISCOVER_MODEL_LABEL[PROVIDER_OF_MODEL[model]]}
                       onAdd={onAddCompetitor}
                       onRemove={onRemoveCompetitor}
