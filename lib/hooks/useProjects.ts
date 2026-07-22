@@ -5,6 +5,7 @@ import type { Project } from '@/types';
 interface UseProjectsReturn {
   projects: Project[];
   loading: boolean;
+  ready: boolean;  // 현재 userId의 프로젝트 로드가 끝나 projects가 실제 상태를 반영하는가
   saveProject: (project: Project) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   createNewProject: (p: Project) => Promise<void>;
@@ -14,15 +15,22 @@ interface UseProjectsReturn {
 export function useProjects(userId: string | null): UseProjectsReturn {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  // ready: 이 userId에 대한 로드가 "완료"됐는지. projects가 []여도 로드 완료 후의 []인지
+  // 아직 로드 전의 []인지 구별하기 위한 신호 — 자동생성이 로드 전 빈 목록에 오작동하지 않도록.
+  const [ready, setReady] = useState(false);
   const supabase = createClient();
 
   // 첫 로드: DB에서 프로젝트 목록 가져오기
   useEffect(() => {
+    // userId가 바뀌면 이전 로드 결과는 무효 — 로드 완료 신호부터 내린다
+    setReady(false);
     if (!userId) {
       setLoading(false);
       return;
     }
+    setLoading(true);
 
+    let cancelled = false;  // userId가 다시 바뀌면 이전 요청 결과는 버림(경합 방지)
     async function loadProjects() {
       try {
         const { data, error } = await supabase
@@ -42,15 +50,17 @@ export function useProjects(userId: string | null): UseProjectsReturn {
           sortOrder: row.sort_order ?? 0,
         }));
 
-        setProjects(loaded);
+        if (!cancelled) setProjects(loaded);
       } catch (e: any) {
         console.error('Failed to load projects:', e?.message || e?.code || JSON.stringify(e));
       } finally {
-        setLoading(false);
+        // 로드가 끝나야(성공/실패 무관) ready를 올려 "이 목록이 확정됐다"고 알린다
+        if (!cancelled) { setLoading(false); setReady(true); }
       }
     }
 
     loadProjects();
+    return () => { cancelled = true; };
   }, [userId]);
 
   async function saveProject(project: Project) {
@@ -132,5 +142,5 @@ export function useProjects(userId: string | null): UseProjectsReturn {
     }
   }
 
-  return { projects, loading, saveProject, deleteProject, createNewProject, reorderProjects };
+  return { projects, loading, ready, saveProject, deleteProject, createNewProject, reorderProjects };
 }

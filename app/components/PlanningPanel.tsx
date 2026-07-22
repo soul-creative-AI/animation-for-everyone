@@ -47,7 +47,7 @@ export default function PlanningPanel({ planning, statuses, onChange, onToggleCo
     <div className="w-full h-full flex flex-col bg-white overflow-hidden">
       <div className="px-5 py-4 border-b border-gray-100">
         <h2 className="text-sm font-bold text-gray-800">기획 정보</h2>
-        <p className="text-xs text-gray-400 mt-0.5">대화하면 자동으로 채워져요</p>
+        <p className="text-xs text-gray-400 mt-0.5">대화하거나 자료를 올리면 자동으로 채워져요</p>
       </div>
       <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
         {FIELDS.map((f) => (

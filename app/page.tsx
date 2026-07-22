@@ -5,9 +5,10 @@ import type {
   Message, PlanningData, PlanningStatuses,
   ResearchData, ResearchStatuses, ResearchMode, PlatformMetric,
   ProjectTab, Project, UploadedSource, PendingChange,
+  OriginalArchive, ArchiveVolume, ArchiveChapter, CompetitorWork,
 } from '@/types';
 import { defaultPlanningData, defaultResearchData } from '@/types';
-import { PLANNING_FIRST, RESEARCH_FIRST, getMockProposals } from '@/lib/mock';
+import { PLANNING_FIRST, RESEARCH_FIRST, ARCHIVE_FIRST, getMockProposals } from '@/lib/mock';
 import { MODELS, type ModelId } from '@/lib/models';
 import { createProject, duplicateProject } from '@/lib/project';
 import { type TokenUsage, estimateCostUsd } from '@/lib/usage';
@@ -21,7 +22,7 @@ import UsageSummary from './components/UsageSummary';
 import PlanningPanel, { FIELDS as PLANNING_FIELDS } from './components/PlanningPanel';
 import type { WorkType } from '@/types';
 import ResearchPanel, { RESEARCH_SECTIONS, type DiscoverResult } from './components/ResearchPanel';
-import AttachmentCard from './components/AttachmentCard';
+import ArchivePanel from './components/ArchivePanel';
 import ProposalCard from './components/ProposalCard';
 import ChangeProposalCard from './components/ChangeProposalCard';
 import AuthModal from './components/AuthModal';
@@ -61,6 +62,11 @@ function splitSentences(text: string): string[] {
   return chunks.length > 0 ? chunks : [text];
 }
 
+// 리서치 필드 key → 라벨 (문서 임포트 안내 메시지에서 채운 항목 이름 표시용)
+const RESEARCH_LABELS: Partial<Record<keyof ResearchData, string>> = Object.fromEntries(
+  RESEARCH_SECTIONS.flatMap((s) => s.groups.flatMap((g) => g.fields.map((f) => [f.key, f.label]))),
+);
+
 // ── 컴포넌트 ───────────────────────────────────────────────────
 export default function Home() {
   // 인증 상태
@@ -71,7 +77,7 @@ export default function Home() {
   const [authLoading, setAuthLoading] = useState(true);
 
   // Supabase에서 프로젝트 로드
-  const { projects, loading: projectsLoading, saveProject, deleteProject, createNewProject, reorderProjects } = useProjects(userId);
+  const { projects, loading: projectsLoading, ready: projectsReady, saveProject, deleteProject, createNewProject, reorderProjects } = useProjects(userId);
 
   // 프로바이더별 이번 결제 주기 예산 사용률 (모델 드롭다운 경고 표시용)
   const providerUsagePct = useProviderUsage();
@@ -97,16 +103,16 @@ export default function Home() {
   const [uploadedSources, setUploadedSources]    = useState<UploadedSource[]>([]);
   const [pendingChanges, setPendingChanges]      = useState<PendingChange[]>([]);
 
+  // 원작 아카이브 (권/화별 요약)
+  const [archive, setArchive]                    = useState<OriginalArchive>({ volumes: [] });
+  const [archiveMsgs, setArchiveMsgs]            = useState<Message[]>([{ role: 'assistant', content: ARCHIVE_FIRST }]);
+  const [archiveLoading, setArchiveLoading]      = useState(false);
+
   // UI
   const [input, setInput]         = useState('');
   const [loading, setLoading]     = useState(false);
   const [model, setModel]         = useState<ModelId>('gemini');
   const [modelOpen, setModelOpen] = useState(false);
-  const [attachOpen, setAttachOpen] = useState(false);
-  const [attachMode, setAttachMode] = useState<'link' | 'text' | null>(null);
-  const [attachInput, setAttachInput] = useState('');
-  const [dragOverChat, setDragOverChat] = useState(false);
-  const [pendingDropFile, setPendingDropFile] = useState<File | null>(null);
   const [showUsage, setShowUsage] = useState(false);
   const [panelWidth, setPanelWidth] = useState(288);  // 우측 패널 너비(px) — 드래그로 조절
 
@@ -133,9 +139,11 @@ export default function Home() {
 
   const bottomRef   = useRef<HTMLDivElement>(null);
   const modelRef    = useRef<HTMLDivElement>(null);
-  const attachRef   = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const firstProjectCreated = useRef(false);  // 첫 프로젝트 자동 생성 중복 방지
+  const docInputRef = useRef<HTMLInputElement>(null);  // 입력창 + 버튼용 파일 선택
+  const [uploadingDoc, setUploadingDoc] = useState(false);  // 자료 업로드 분석 중
+  const [inputDragOver, setInputDragOver] = useState(false);  // 입력창에 파일 드래그 중
 
   // 현재 탭 메시지
   const messages    = tab === 'planning' ? planningMsgs    : researchMsgs;
@@ -162,17 +170,32 @@ export default function Home() {
     checkAuth();
   }, []);
 
-  /* ── 프로젝트 로드 후 첫 번째 선택 ── */
+  /* ── 프로젝트 로드 후 첫 번째 선택 ──
+     프로젝트가 하나도 없으면(첫 로그인 등) 자동 생성 —
+     currentId가 비어 있으면 자동저장이 조용히 무시되고 수동 저장도 실패하기 때문.
+     반드시 projectsReady(로드 완료)일 때만 판단 — 로드 전 빈 목록을 "0개"로 오해해
+     새로고침마다 빈 프로젝트가 생기던 버그를 막는다. */
   useEffect(() => {
-    if (projects.length > 0 && !currentId) {
-      applyProject(projects[0]);
+    if (!userId || !projectsReady) return;
+    if (projects.length > 0) {
+      if (!currentId) applyProject(projects[0]);
+    } else if (!currentId && !firstProjectCreated.current) {
+      firstProjectCreated.current = true;
+      const fresh = createProject();
+      createNewProject(fresh)
+        .then(() => applyProject(fresh))
+        .catch((e) => {
+          firstProjectCreated.current = false;
+          console.error('Initial project create failed:', e);
+          alert(`첫 프로젝트 생성에 실패했습니다: ${e?.message ?? '알 수 없는 오류'}`);
+        });
     }
-  }, [projects]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects, projectsReady, userId]);
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
       if (modelRef.current && !modelRef.current.contains(e.target as Node)) setModelOpen(false);
-      if (attachRef.current && !attachRef.current.contains(e.target as Node)) { setAttachOpen(false); setAttachMode(null); }
     };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
@@ -189,7 +212,7 @@ export default function Home() {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, planningMsgs, planning, planningStatuses, researchMsgs, research, researchStatuses, researchMode, uploadedSources, pendingChanges]);
+  }, [title, planningMsgs, planning, planningStatuses, researchMsgs, research, researchStatuses, researchMode, uploadedSources, pendingChanges, archive, archiveMsgs]);
 
   /* ── 프로젝트 로드 ── */
   function applyProject(p: Project) {
@@ -206,6 +229,9 @@ export default function Home() {
     setResearchMode(p.researchMode);
     setUploadedSources([...p.uploadedSources]);
     setPendingChanges([...p.pendingChanges]);
+    // 구버전 프로젝트엔 archive가 없으므로 기본값으로 병합
+    setArchive(p.archive ?? { volumes: [] });
+    setArchiveMsgs(p.archiveMessages?.length ? [...p.archiveMessages] : [{ role: 'assistant', content: ARCHIVE_FIRST }]);
     setSaved(true);
   }
 
@@ -235,9 +261,12 @@ export default function Home() {
   }
 
   async function handleSave() {
+    // currentId가 비면(예외 상황 방어) 새 id를 만들어 새 프로젝트로 저장 — 빈 id로 upsert하면 uuid 오류로 실패
+    const id = currentId || crypto.randomUUID();
+    if (!currentId) setCurrentId(id);
     const now = new Date().toISOString();
     const updated: Project = {
-      id: currentId,
+      id,
       title,
       createdAt: projects.find((p) => p.id === currentId)?.createdAt || now,
       updatedAt: now,
@@ -252,13 +281,16 @@ export default function Home() {
       researchMode,
       uploadedSources: [...uploadedSources],
       pendingChanges: [...pendingChanges],
+      archive: { volumes: archive.volumes.map((v) => ({ ...v, chapters: [...v.chapters] })) },
+      archiveMessages: archiveMsgs,
     };
     try {
       await saveProject(updated);
       setSaved(true);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Save failed:', e);
-      alert('저장에 실패했습니다');
+      // 원인 메시지를 같이 보여줘야 사용자가 문제를 전달할 수 있음 (예: RLS 거부, 네트워크 오류)
+      alert(`저장에 실패했습니다: ${e?.message ?? '알 수 없는 오류'}`);
     }
   }
 
@@ -327,6 +359,22 @@ export default function Home() {
             label: '플랫폼별 지표',
             value: rows.length > 0 ? rows.join('\n') : '확인 필요 (플랫폼 수치 미수집)',
           });
+        }
+        // 시장 리서치 섹션엔 분석 완료된 경쟁작 카드를 작품별로 붙여서 내보냄
+        if (s.heading === '시장 리서치') {
+          const analyzed = (research.competitors ?? []).filter((c) => c.status === 'done');
+          for (const c of analyzed) {
+            const rows = [
+              c.summary && `요약: ${c.summary}`,
+              c.strengths && `장점: ${c.strengths}`,
+              c.cliches && `클리셰: ${c.cliches}`,
+              c.marketPosition && `시장 포지션: ${c.marketPosition}`,
+              c.avoid && `피해야 할 것: ${c.avoid}`,
+              c.leverage && `활용 방안: ${c.leverage}`,
+              c.differentiation && `차별화 방안: ${c.differentiation}`,
+            ].filter(Boolean) as string[];
+            if (rows.length > 0) fields.push({ label: `경쟁작 분석 — ${c.title}`, value: rows.join('\n') });
+          }
         }
         // 독자 반응 섹션엔 감정 비율(도넛 차트 데이터)을 텍스트로도 남김 — 내보내기에서 사라지지 않도록
         if (s.groups.some((g) => g.label === '독자 반응 분석') && research.sentiment) {
@@ -535,7 +583,7 @@ export default function Home() {
     try {
       const res = await fetch('/api/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next, model, context: 'research', researchData: research }),
+        body: JSON.stringify({ messages: next, model, context: 'research', researchData: research, archiveData: archive }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -632,182 +680,27 @@ export default function Home() {
     await sendMessageText(text);
   }
 
-  /* ── 첨부 처리 ── */
-  function addSource(type: UploadedSource['type'], name: string) {
-    const src: UploadedSource = {
-      id: crypto.randomUUID(), type, name,
-      uploadStatus: 'uploading', analysisStatus: 'pending',
-    };
-    setUploadedSources((prev) => [...prev, src]);
-    setResearchMsgs((prev) => [...prev, { role: 'user', content: '', card: { type: 'attachment', source: src } }]);
+  /* ── 원작 아카이브 탭 Q&A: "~한 장면 몇 화야?"를 아카이브 인덱스 근거로 답함 ── */
+  async function sendArchiveQuestion(text: string) {
+    if (!text.trim() || archiveLoading) return;
+    const next: Message[] = [...archiveMsgs, { role: 'user', content: text.trim() }];
+    setArchiveMsgs(next);
+    setArchiveLoading(true);
     setSaved(false);
-
-    // mock: 업로드 → 분석 완료
-    setTimeout(() => {
-      setUploadedSources((prev) => prev.map((s) => s.id === src.id ? { ...s, uploadStatus: 'done', analysisStatus: 'analyzing' } : s));
-      setResearchMsgs((prev) => prev.map((m) =>
-        m.card?.type === 'attachment' && m.card.source.id === src.id
-          ? { ...m, card: { type: 'attachment', source: { ...src, uploadStatus: 'done', analysisStatus: 'analyzing' } } }
-          : m
-      ));
-    }, 800);
-    setTimeout(() => {
-      setUploadedSources((prev) => prev.map((s) => s.id === src.id ? { ...s, analysisStatus: 'done' } : s));
-      setResearchMsgs((prev) => prev.map((m) =>
-        m.card?.type === 'attachment' && m.card.source.id === src.id
-          ? { ...m, card: { type: 'attachment', source: { ...src, uploadStatus: 'done', analysisStatus: 'done' } } }
-          : m
-      ));
-    }, 2000);
-  }
-
-  /* ── 파일 첨부: Supabase Storage에 실제 업로드 ── */
-  async function uploadFileSource(file: File) {
-    const src: UploadedSource = {
-      id: crypto.randomUUID(), type: 'file', name: file.name,
-      uploadStatus: 'uploading', analysisStatus: 'pending',
-    };
-    setUploadedSources((prev) => [...prev, src]);
-    setResearchMsgs((prev) => [...prev, { role: 'user', content: '', card: { type: 'attachment', source: src } }]);
-    setSaved(false);
-
-    // Storage 키는 ASCII만 허용 — 한글·특수문자는 밑줄로 치환 (화면 표시용 file.name은 그대로 유지)
-    // \w는 [A-Za-z0-9_]라 한글은 매칭 안 됨 → 한글 파일명은 밑줄로 바뀜
-    const safeName = file.name.replace(/[^\w.-]/g, '_').replace(/_+/g, '_');
-    // src.id(UUID) 접두사로 파일명이 밑줄만 남더라도 경로가 겹치지 않게 보장
-    const path = `${userId}/${currentId}/${src.id}_${safeName}`;
-    const { error } = await supabase.storage.from('research-sources').upload(path, file);
-
-    if (error) {
-      console.error('파일 업로드 실패:', error);
-      setUploadedSources((prev) => prev.map((s) => s.id === src.id ? { ...s, uploadStatus: 'error' } : s));
-      setResearchMsgs((prev) => prev.map((m) =>
-        m.card?.type === 'attachment' && m.card.source.id === src.id
-          ? { ...m, card: { type: 'attachment', source: { ...src, uploadStatus: 'error' } } }
-          : m
-      ));
-      return;
-    }
-
-    // 카드 상태 갱신 헬퍼
-    const setSourceStatus = (patch: Partial<UploadedSource>) => {
-      setUploadedSources((prev) => prev.map((s) => s.id === src.id ? { ...s, ...patch } : s));
-      setResearchMsgs((prev) => prev.map((m) =>
-        m.card?.type === 'attachment' && m.card.source.id === src.id
-          ? { ...m, card: { type: 'attachment', source: { ...m.card.source, ...patch } } }
-          : m
-      ));
-    };
-
-    // 텍스트·PDF만 AI 분석 대상 (이미지 등은 저장만)
-    const isTextFile = file.type.startsWith('text/') || /\.(txt|md|markdown|csv)$/i.test(file.name);
-    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-    if (!isTextFile && !isPdf) {
-      setSourceStatus({ uploadStatus: 'done', storagePath: path, analysisStatus: 'done' });
-      setResearchMsgs((prev) => [...prev, { role: 'assistant', content: `"${file.name}" 파일을 저장했어요. (이미지 등은 자동 분석 대상이 아니라 저장만 했습니다.)` }]);
-      return;
-    }
-
-    setSourceStatus({ uploadStatus: 'done', storagePath: path, analysisStatus: 'analyzing' });
-
-    // 원작 텍스트/PDF를 읽어 AI로 각색 리서치 필드 추출
     try {
-      // PDF는 base64로, 텍스트 파일은 문자열로 서버에 전달
-      const body = isPdf
-        ? { pdfBase64: await fileToBase64(file), fileName: file.name, model }
-        : { text: await file.text(), model };
-      const res = await fetch('/api/analyze-source', {
+      const res = await fetch('/api/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ messages: next, model, context: 'archive', archiveData: archive }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      recordUsage('research-analyze', data.usage, data.usedModel as ModelId | undefined);
-
-      const ext = (data.extracted ?? {}) as Partial<ResearchData>;
-      const keys = (Object.keys(ext) as (keyof ResearchData)[]).filter((k) => ext[k]);
-
-      if (keys.length > 0) {
-        setResearch((prev) => {
-          const u = { ...prev };
-          for (const k of keys) (u as Record<string, unknown>)[k] = ext[k];
-          return u;
-        });
-        setResearchStatuses((prev) => {
-          const s = { ...prev };
-          for (const k of keys) s[k] = 'inferred';
-          return s;
-        });
-      }
-
-      setSourceStatus({ analysisStatus: 'done' });
-
-      if (keys.length > 0) {
-        // 원작 파일로는 알 수 없는 필드(플랫폼 지표·독자 반응·시장 리서치)가 비었으면
-        // 지어내지 않고, 어떻게 채우는지 방법을 안내한다.
-        const filledOrExt = (k: keyof ResearchData) => ext[k] || research[k];
-        const needsPlatformData = !filledOrExt('metricsOfficial') || !filledOrExt('reactionPositive') || !filledOrExt('reactionNegative');
-        const needsMarketResearch = !filledOrExt('similarWorks') || !filledOrExt('genreTrends') || !filledOrExt('differentiation');
-
-        const parts = [`"${file.name}" 원작을 분석해서 오른쪽 리서치 정보를 채웠어요. 확인하고 맞으면 "확정"해주세요.`];
-        if (needsPlatformData || needsMarketResearch) {
-          parts.push('\n아직 비어 있는 항목은 원작 파일만으로는 알 수 없어요. 이렇게 채울 수 있어요:');
-        }
-        if (needsPlatformData) {
-          parts.push(
-            '\n📊 플랫폼 지표·독자 반응 (조회수·평점·댓글)\n'
-            + '  ① 오른쪽 "원작명"을 확인하고 그 아래 🔍 "AI로 자동 조사하기"를 누르면 게재 플랫폼을 찾아드려요.\n'
-            + '  ② 카카오페이지·문피아·리디 등 작품 페이지를 열어 조회수·평점·별점, 그리고 댓글/리뷰를 드래그해 복사하세요.\n'
-            + '  ③ 🔗 "플랫폼 데이터 가져오기 도우미"에 붙여넣고 "분석해서 채우기"를 누르면 지표·긍정/부정 반응으로 정리해드려요. (숫자는 제가 만들지 않고 붙여주신 것만 정리해요)'
-          );
-        }
-        if (needsMarketResearch) {
-          parts.push('\n🔍 유사 작품·장르 트렌드·차별화 포인트\n  채팅으로 "유사작이랑 차별화 포인트 분석해줘"라고 말씀해주시면 제가 정리해드릴게요.');
-        }
-        setResearchMsgs((prev) => [...prev, { role: 'assistant', content: parts.join('\n') }]);
-      } else {
-        setResearchMsgs((prev) => [...prev, {
-          role: 'assistant',
-          content: `"${file.name}"을 읽었는데 각색 리서치 정보를 뽑아내지 못했어요. 파일 내용을 확인해주세요.`,
-        }]);
-      }
+      recordUsage('archive-chat', data.usage);
+      setArchiveMsgs((prev) => [...prev, { role: 'assistant', content: data.text }]);
     } catch (e: any) {
-      console.error('원작 분석 실패:', e);
-      setSourceStatus({ analysisStatus: 'error' });
-      const content = e?.message || `"${file.name}" 분석 중 오류가 발생했어요. 다시 시도해주세요.`;
-      setResearchMsgs((prev) => [...prev, { role: 'assistant', content }]);
+      setArchiveMsgs((prev) => [...prev, { role: 'assistant', content: e?.message || '오류가 발생했습니다. 다시 시도해주세요.' }]);
+    } finally {
+      setArchiveLoading(false);
     }
-  }
-
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (file) uploadFileSource(file);
-    e.target.value = '';
-    setAttachOpen(false);
-  }
-
-  /* ── 드래그 앤 드롭 첨부 (리서치 탭 전용) ── */
-  function handleChatDragOver(e: React.DragEvent) {
-    if (tab !== 'research') return;
-    e.preventDefault();
-    setDragOverChat(true);
-  }
-  function handleChatDragLeave(e: React.DragEvent) {
-    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    setDragOverChat(false);
-  }
-  function handleChatDrop(e: React.DragEvent) {
-    if (tab !== 'research') return;
-    e.preventDefault();
-    setDragOverChat(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) setPendingDropFile(file);
-  }
-
-  function submitAttach() {
-    if (!attachInput.trim()) return;
-    addSource(attachMode === 'link' ? 'link' : 'text', attachInput.trim());
-    setAttachInput(''); setAttachMode(null); setAttachOpen(false);
   }
 
   /* ── 기획 변경 적용 ── */
@@ -859,7 +752,26 @@ export default function Home() {
 
   function handleResearchFieldChange(key: keyof ResearchData, value: string) {
     setResearch((prev) => ({ ...prev, [key]: value }));
-    setResearchStatuses((prev) => ({ ...prev, [key]: 'confirmed' }));
+    // 타이핑만으로는 확정하지 않음(확정=readOnly). AI 추정/변경 제안 배지는 손대면 제거.
+    setResearchStatuses((prev) => {
+      if (prev[key] === 'inferred' || prev[key] === 'suggested') {
+        const s = { ...prev };
+        delete s[key];
+        return s;
+      }
+      return prev;
+    });
+    setSaved(false);
+  }
+
+  // 리서치 필드 확정 토글 (확정하면 AI 추출·자동조사가 덮어쓰지 않고, 편집 잠금)
+  function toggleResearchConfirm(key: keyof ResearchData) {
+    setResearchStatuses((prev) => {
+      const s = { ...prev };
+      if (s[key] === 'confirmed') delete s[key];
+      else s[key] = 'confirmed';
+      return s;
+    });
     setSaved(false);
   }
 
@@ -886,6 +798,318 @@ export default function Home() {
       platformMetrics: prev.platformMetrics.filter((m) => m.id !== id),
     }));
     setSaved(false);
+  }
+
+  /* ── 경쟁작/레퍼런스 분석 ── */
+  function addCompetitor(title: string, reason = '', addedBy: 'auto' | 'user' = 'user') {
+    const t = title.trim();
+    if (!t) return;
+    setResearch((prev) => {
+      const existing = prev.competitors ?? [];
+      if (existing.some((c) => c.title === t)) return prev;  // 같은 작품 중복 방지
+      return {
+        ...prev,
+        competitors: [...existing, {
+          id: crypto.randomUUID(), title: t, reason, addedBy, status: 'pending' as const,
+          summary: '', strengths: '', cliches: '', marketPosition: '', avoid: '', leverage: '', differentiation: '',
+        }],
+      };
+    });
+    setSaved(false);
+  }
+
+  function removeCompetitor(id: string) {
+    setResearch((prev) => ({ ...prev, competitors: (prev.competitors ?? []).filter((c) => c.id !== id) }));
+    setSaved(false);
+  }
+
+  function updateCompetitor(id: string, patch: Partial<CompetitorWork>) {
+    setResearch((prev) => ({
+      ...prev,
+      competitors: (prev.competitors ?? []).map((c) => (c.id === id ? { ...c, ...patch } : c)),
+    }));
+    setSaved(false);
+  }
+
+  // 경쟁작 분석에 함께 보낼 "우리 작품 정보" — 리서치·기획에서 채워진 핵심만 추려서
+  function ourWorkContext(): string {
+    const lines: string[] = [];
+    if (research.originalTitle) lines.push(`원작명: ${research.originalTitle}`);
+    if (planning.title && planning.title !== research.originalTitle) lines.push(`기획 제목: ${planning.title}`);
+    const genre = research.overviewGenreStatus || planning.genre;
+    if (genre) lines.push(`장르: ${genre}`);
+    if (research.overviewPremise) lines.push(`핵심 설정: ${research.overviewPremise}`);
+    if (planning.logline) lines.push(`로그라인: ${planning.logline}`);
+    const plot = planning.synopsis || research.fullPlot;
+    if (plot) lines.push(`줄거리: ${plot.slice(0, 600)}`);  // 토큰 절약을 위해 앞부분만
+    const target = planning.targetAudience || research.audienceProfile;
+    if (target) lines.push(`타깃: ${target}`);
+    if (research.differentiation) lines.push(`차별화 방향: ${research.differentiation}`);
+    return lines.join('\n');
+  }
+
+  // 경쟁작 1개를 웹 검색으로 분석 (provider별 저비용 모델 — 자동조사와 동일 비용 구조)
+  async function analyzeCompetitor(id: string) {
+    const comp = (research.competitors ?? []).find((c) => c.id === id);
+    if (!comp || comp.status === 'analyzing') return;
+    updateCompetitor(id, { status: 'analyzing' });
+    try {
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: comp.title, model, mode: 'competitor', context: ourWorkContext() }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      recordUsage('competitor-analyze', data.usage, data.usedModel as ModelId | undefined);
+
+      const c = (data.competitor ?? {}) as Record<string, unknown>;
+      const pick = (k: string) => (typeof c[k] === 'string' ? (c[k] as string) : '');
+      if (!c.found) {
+        updateCompetitor(id, { status: 'error' });
+        alert(`「${comp.title}」을(를) 웹에서 찾지 못했어요. ${pick('note')}`.trim());
+        return;
+      }
+      updateCompetitor(id, {
+        status: 'done',
+        summary: pick('summary'), strengths: pick('strengths'), cliches: pick('cliches'),
+        marketPosition: pick('marketPosition'), avoid: pick('avoid'),
+        leverage: pick('leverage'), differentiation: pick('differentiation'),
+      });
+    } catch (e: any) {
+      updateCompetitor(id, { status: 'error' });
+      alert(e?.message || '경쟁작 분석 중 오류가 발생했어요. 다시 시도해주세요.');
+    }
+  }
+
+  /* ── 원작 아카이브: 권/화 수정·삭제 (추가는 원문 자동 정리로만) ── */
+  function updateArchiveVolume(id: string, patch: Partial<ArchiveVolume>) {
+    setArchive((prev) => ({
+      volumes: prev.volumes.map((v) => (v.id === id ? { ...v, ...patch } : v)),
+    }));
+    setSaved(false);
+  }
+
+  function removeArchiveVolume(id: string) {
+    if (!confirm('이 권과 안에 있는 모든 화를 삭제할까요?')) return;
+    setArchive((prev) => ({ volumes: prev.volumes.filter((v) => v.id !== id) }));
+    setSaved(false);
+  }
+
+  function updateArchiveChapter(volumeId: string, chapterId: string, patch: Partial<ArchiveChapter>) {
+    setArchive((prev) => ({
+      volumes: prev.volumes.map((v) =>
+        v.id === volumeId
+          ? { ...v, chapters: v.chapters.map((c) => (c.id === chapterId ? { ...c, ...patch } : c)) }
+          : v,
+      ),
+    }));
+    setSaved(false);
+  }
+
+  function removeArchiveChapter(volumeId: string, chapterId: string) {
+    setArchive((prev) => ({
+      volumes: prev.volumes.map((v) =>
+        v.id === volumeId ? { ...v, chapters: v.chapters.filter((c) => c.id !== chapterId) } : v,
+      ),
+    }));
+    setSaved(false);
+  }
+
+  // 원작 원문(text 또는 pdfBase64)을 분석해 비어 있는 리서치 필드를 채운다.
+  // 여러 권을 차례로 올릴 수 있으므로 이미 값이 있는 필드는 덮어쓰지 않는다(첫 업로드가 채우고 이후엔 보존).
+  async function fillResearchFromSource(source: { text?: string; pdfBase64?: string }) {
+    try {
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...source, model }),  // mode 기본값 'source'
+      });
+      const data = await res.json();
+      if (data.error) return;  // 리서치 채우기는 부가 기능이라 실패해도 아카이브 결과를 막지 않음
+      recordUsage('research-analyze', data.usage, data.usedModel as ModelId | undefined);
+
+      const ext = (data.extracted ?? {}) as Partial<ResearchData>;
+      const keys = (Object.keys(ext) as (keyof ResearchData)[])
+        .filter((k) => ext[k] && !String(research[k] ?? '').trim() && researchStatuses[k] !== 'confirmed');
+      if (keys.length === 0) return;
+      setResearch((prev) => {
+        const u = { ...prev };
+        for (const k of keys) if (!String(prev[k] ?? '').trim()) (u as Record<string, unknown>)[k] = ext[k];
+        return u;
+      });
+      setResearchStatuses((prev) => {
+        const s = { ...prev };
+        for (const k of keys) s[k] = 'inferred';
+        return s;
+      });
+      if (researchMode !== 'adaptation') setResearchMode('adaptation');
+      setSaved(false);
+    } catch {
+      // 무시 — 아카이브 자동 분할은 이미 성공했으므로 조용히 넘어간다
+    }
+  }
+
+  // 한 권 분량 원문(파일 또는 붙여넣기)을 AI로 화 단위 분할 → 새 권으로 아카이브에 추가.
+  // 권 번호는 올린 순서대로 자동 지정. 같은 원문으로 비어 있는 리서치 필드(줄거리·캐릭터 등)도 함께 채운다.
+  async function autoSplitVolume(opts: { file?: File; text?: string }): Promise<boolean> {
+    try {
+      const body: { model: ModelId; mode: 'archive-split'; text?: string; pdfBase64?: string } = { model, mode: 'archive-split' };
+      if (opts.file) {
+        const isPdf = opts.file.type === 'application/pdf' || /\.pdf$/i.test(opts.file.name);
+        if (isPdf) body.pdfBase64 = await fileToBase64(opts.file);
+        else body.text = await opts.file.text();
+      } else {
+        body.text = opts.text ?? '';
+      }
+      if (!body.text?.trim() && !body.pdfBase64) {
+        alert('원문 파일이나 텍스트를 넣어주세요.');
+        return false;
+      }
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      recordUsage('archive-split', data.usage, data.usedModel as ModelId | undefined);
+
+      const chapters = (data.chapters ?? []) as { number?: string; title?: string; summary?: string; characters?: string; sceneTags?: string }[];
+      const volumeSummary = typeof data.volumeSummary === 'string' ? data.volumeSummary : '';
+      if (chapters.length === 0) {
+        alert('원문에서 화를 나누지 못했어요. 한 권 분량인지, 형식이 너무 특이하지 않은지 확인해주세요. (분량이 아주 크면 앞부분만 인식될 수 있어요)');
+        return false;
+      }
+      setArchive((prev) => ({
+        volumes: [...prev.volumes, {
+          id: crypto.randomUUID(),
+          number: String(prev.volumes.length + 1),
+          title: '',
+          summary: volumeSummary,
+          chapters: chapters.map((c, i) => ({
+            id: crypto.randomUUID(),
+            number: String(c.number ?? i + 1),
+            title: c.title ?? '',
+            summary: c.summary ?? '',
+            characters: c.characters ?? '',
+            sceneTags: c.sceneTags ?? '',
+          })),
+        }],
+      }));
+      setSaved(false);
+      // 같은 원문으로 리서치 필드도 채움 (실패해도 아카이브 결과엔 영향 없음)
+      await fillResearchFromSource(body.pdfBase64 ? { pdfBase64: body.pdfBase64 } : { text: body.text });
+      return true;
+    } catch (e: any) {
+      alert(e?.message || '자동 정리 중 오류가 발생했어요. 다시 시도해주세요.');
+      return false;
+    }
+  }
+
+  /* ── 기획 탭: 문서 업로드(PDF/TXT) → 기획·리서치 빈 필드 자동 채우기 ──
+     기획서든 리서치 자료든, 예전에 내보낸(export) 파일이든 넣으면 문서에 담긴 항목이
+     각 탭(기획/리서치)의 빈칸에 채워진다. 이미 쓴 값·확정 필드는 보존한다. */
+  async function fillFromDoc(file: File): Promise<boolean> {
+    // 결과 안내는 현재 보고 있는 탭의 채팅에 남긴다 (업로드는 두 탭 공통 + 버튼에서 촉발)
+    const appendChat = tab === 'planning' ? setPlanningMsgs : setResearchMsgs;
+    try {
+      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+      const body: { model: ModelId; mode: 'doc-import'; text?: string; pdfBase64?: string } = { model, mode: 'doc-import' };
+      if (isPdf) body.pdfBase64 = await fileToBase64(file);
+      else body.text = await file.text();
+      if (!body.pdfBase64 && !body.text?.trim()) {
+        alert('파일에서 내용을 읽지 못했어요. PDF나 텍스트 파일(.txt, .md)인지 확인해주세요.');
+        return false;
+      }
+      const res = await fetch('/api/analyze-source', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      recordUsage('doc-import', data.usage, data.usedModel as ModelId | undefined);
+
+      const imported = (data.imported ?? {}) as {
+        planning?: Partial<Record<keyof PlanningData, string>>;
+        research?: Partial<Record<keyof ResearchData, string>>;
+      };
+
+      // ── 기획 필드 채우기 (빈 필드만, workType은 enum 값 검증) ──
+      const pExt = { ...(imported.planning ?? {}) };
+      const validWorkTypes: WorkType[] = ['undecided', 'original', 'adaptation', 'series', 'feature'];
+      if (pExt.workType && !validWorkTypes.includes(pExt.workType as WorkType)) delete pExt.workType;
+      const pKeys = (Object.keys(pExt) as (keyof PlanningData)[]).filter((k) => {
+        if (!pExt[k] || planningStatuses[k] === 'confirmed') return false;
+        if (k === 'workType') return planning.workType === 'undecided' && pExt.workType !== 'undecided';
+        return !String(planning[k] ?? '').trim();
+      });
+      if (pKeys.length > 0) {
+        setPlanning((prev) => {
+          const u = { ...prev };
+          for (const k of pKeys) (u as Record<string, string>)[k] = pExt[k]!;
+          return u;
+        });
+        setPlanningStatuses((prev) => {
+          const s = { ...prev };
+          for (const k of pKeys) s[k] = 'inferred';
+          return s;
+        });
+      }
+
+      // ── 리서치 필드 채우기 (문자열 필드만, 빈 필드만) ──
+      const rExt = (imported.research ?? {}) as Partial<Record<keyof ResearchData, string>>;
+      const rKeys = (Object.keys(rExt) as (keyof ResearchData)[]).filter((k) =>
+        rExt[k] && typeof rExt[k] === 'string' &&
+        researchStatuses[k] !== 'confirmed' && !String(research[k] ?? '').trim(),
+      );
+      if (rKeys.length > 0) {
+        setResearch((prev) => {
+          const u = { ...prev };
+          for (const k of rKeys) if (!String(prev[k] ?? '').trim()) (u as Record<string, unknown>)[k] = rExt[k];
+          return u;
+        });
+        setResearchStatuses((prev) => {
+          const s = { ...prev };
+          for (const k of rKeys) s[k] = 'inferred';
+          return s;
+        });
+      }
+
+      if (pKeys.length === 0 && rKeys.length === 0) {
+        appendChat((prev) => [...prev, {
+          role: 'assistant',
+          content: `문서(${file.name})를 읽었지만 새로 채울 빈 항목이 없었어요. (이미 채워져 있거나 확정된 항목은 건드리지 않아요)`,
+        }]);
+        return true;
+      }
+      setSaved(false);
+
+      // 어떤 탭의 무엇이 채워졌는지 안내
+      const pLabels = pKeys.map((k) => PLANNING_FIELDS.find((f) => f.key === k)?.label ?? k);
+      const rLabels = rKeys.map((k) => RESEARCH_LABELS[k] ?? k);
+      const parts = [`문서(${file.name})에서 항목을 채웠어요.`];
+      if (pLabels.length > 0) parts.push(`\n📋 기획: ${pLabels.join(', ')}`);
+      if (rLabels.length > 0) parts.push(`\n🔍 리서치: ${rLabels.join(', ')}`);
+      parts.push('\n각 탭에서 확인하고, 맞는 내용은 확정해주세요.');
+      appendChat((prev) => [...prev, { role: 'assistant', content: parts.join('\n') }]);
+      return true;
+    } catch (e: any) {
+      alert(e?.message || '문서 분석 중 오류가 발생했어요. 다시 시도해주세요.');
+      return false;
+    }
+  }
+
+  // 입력창 왼쪽 + 버튼: 파일 선택 → 자료 업로드(fillFromDoc). 기획·리서치 탭 공통.
+  async function handleDocPick(file: File | undefined | null) {
+    if (!file || uploadingDoc) return;
+    // 업로드한 파일을 현재 탭 채팅에 사용자 메시지로 표시 (사용자가 무엇을 올렸는지 알 수 있게)
+    const appendChat = tab === 'planning' ? setPlanningMsgs : setResearchMsgs;
+    appendChat((prev) => [...prev, { role: 'user', content: `📎 파일 업로드: ${file.name}` }]);
+    setUploadingDoc(true);
+    try {
+      await fillFromDoc(file);
+    } finally {
+      setUploadingDoc(false);
+      if (docInputRef.current) docInputRef.current.value = '';
+    }
   }
 
   /* ── 리서치 → 기획 적용 ──
@@ -1044,6 +1268,11 @@ export default function Home() {
         });
         setSaved(false);
       }
+
+      // 자동조사에서 찾은 유사작품을 경쟁작 분석 리스트에 자동 추가 (같은 검색에 얹혀서 추가 비용 없음)
+      for (const w of result.similarWorksList ?? []) {
+        if (w.title?.trim()) addCompetitor(w.title, w.reason ?? '', 'auto');
+      }
       return result;
     } catch (e: any) {
       alert(e?.message || '검색 중 오류가 발생했어요. 다시 시도해주세요.');
@@ -1110,13 +1339,13 @@ export default function Home() {
 
         {/* 탭 바 */}
         <div className="flex items-center gap-1 px-6 border-b border-gray-200 bg-white shrink-0">
-          {(['research', 'planning'] as ProjectTab[]).map((t) => (
+          {(['research', 'archive', 'planning'] as ProjectTab[]).map((t) => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-4 py-2.5 text-xs font-semibold transition-colors border-b-2 -mb-px ${
                 tab === t ? 'text-emerald-600 border-emerald-500' : 'text-gray-500 border-transparent hover:text-gray-700'
               }`}
             >
-              {t === 'planning' ? '기획' : '리서치'}
+              {t === 'planning' ? '기획' : t === 'archive' ? '원작 아카이브' : '리서치'}
             </button>
           ))}
           {['시리즈 구성', '시나리오'].map((t) => (
@@ -1127,38 +1356,34 @@ export default function Home() {
           ))}
         </div>
 
-        {/* 콘텐츠 영역 (채팅 + 우측 패널) */}
+        {/* 콘텐츠 영역: 아카이브 탭은 전체 폭, 그 외는 채팅 + 우측 패널 */}
+        {tab === 'archive' ? (
+          <div className="flex flex-1 overflow-hidden">
+            <ArchivePanel
+              archive={archive}
+              model={model}
+              onModelChange={setModel}
+              onUpdateVolume={updateArchiveVolume}
+              onRemoveVolume={removeArchiveVolume}
+              onUpdateChapter={updateArchiveChapter}
+              onRemoveChapter={removeArchiveChapter}
+              onAutoSplit={autoSplitVolume}
+              messages={archiveMsgs}
+              chatLoading={archiveLoading}
+              onAsk={sendArchiveQuestion}
+            />
+          </div>
+        ) : (
         <div className="flex flex-1 overflow-hidden">
 
           {/* 채팅 패널 */}
           <div
             className="relative flex flex-col flex-1"
             style={{ minWidth: 0 }}
-            onDragOver={handleChatDragOver}
-            onDragLeave={handleChatDragLeave}
-            onDrop={handleChatDrop}
           >
-            {dragOverChat && (
-              <div className="absolute inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-emerald-400 bg-emerald-50/80 pointer-events-none">
-                <p className="text-sm font-semibold text-emerald-600">여기에 파일을 놓아주세요</p>
-              </div>
-            )}
             {/* 메시지 목록 */}
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
               {messages.map((m, i) => {
-                if (m.card?.type === 'attachment') {
-                  return (
-                    <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <AttachmentCard
-                        source={m.card.source}
-                        onDelete={(id) => {
-                          setUploadedSources((prev) => prev.filter((s) => s.id !== id));
-                          setResearchMsgs((prev) => prev.filter((_, idx) => idx !== i));
-                        }}
-                      />
-                    </div>
-                  );
-                }
                 if (m.card?.type === 'proposal') {
                   return (
                     <div key={i} className="flex justify-start">
@@ -1216,8 +1441,16 @@ export default function Home() {
               <div ref={bottomRef} />
             </div>
 
-            {/* 입력 영역 */}
-            <div className="px-6 py-4 bg-white border-t border-gray-200 shrink-0">
+            {/* 입력 영역 (파일을 끌어다 놓으면 자료 업로드) */}
+            <div
+              className={`px-6 py-4 bg-white border-t shrink-0 transition-colors ${inputDragOver ? 'border-emerald-400 bg-emerald-50/50' : 'border-gray-200'}`}
+              onDragOver={(e) => { if (!uploadingDoc) { e.preventDefault(); setInputDragOver(true); } }}
+              onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setInputDragOver(false); }}
+              onDrop={(e) => { e.preventDefault(); setInputDragOver(false); handleDocPick(e.dataTransfer.files?.[0]); }}
+            >
+              {inputDragOver && (
+                <p className="text-[11px] font-semibold text-emerald-600 mb-2 text-center">📄 여기에 파일을 놓으면 자료 업로드 (PDF·TXT)</p>
+              )}
               {/* 모델 선택 + 사용량 보기 */}
               <div className="flex items-center gap-3 mb-2">
                 <div className="relative" ref={modelRef}>
@@ -1261,69 +1494,40 @@ export default function Home() {
               </div>
 
               <div className="flex gap-2 items-end">
-                {/* 첨부 버튼 (리서치 탭만) */}
-                {tab === 'research' && (
-                  <div className="relative" ref={attachRef}>
-                    <button onClick={() => { setAttachOpen((o) => !o); setAttachMode(null); }}
-                      className="w-10 h-10 flex items-center justify-center rounded-xl border border-gray-200 hover:border-emerald-400 text-gray-400 hover:text-emerald-600 transition-colors text-lg font-light bg-white shrink-0">
-                      +
-                    </button>
-                    {attachOpen && (
-                      <div className="absolute bottom-full left-0 mb-2 w-44 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden z-50">
-                        <button onClick={() => fileInputRef.current?.click()}
-                          className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2">
-                          <span>📄</span> 파일 업로드
-                        </button>
-                        <button onClick={() => { setAttachMode('link'); setAttachOpen(false); }}
-                          className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2">
-                          <span>🔗</span> 링크 추가
-                        </button>
-                        <button onClick={() => { setAttachMode('text'); setAttachOpen(false); }}
-                          className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2">
-                          <span>📝</span> 텍스트 붙여넣기
-                        </button>
-                      </div>
-                    )}
-                    <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} />
-                  </div>
-                )}
-
-                {/* 링크/텍스트 입력 모드 */}
-                {attachMode ? (
-                  <div className="flex-1 flex gap-2">
-                    <input
-                      autoFocus
-                      value={attachInput}
-                      onChange={(e) => setAttachInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') submitAttach(); if (e.key === 'Escape') setAttachMode(null); }}
-                      placeholder={attachMode === 'link' ? 'URL을 입력하세요' : '텍스트를 붙여넣으세요'}
-                      className="flex-1 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
-                    />
-                    <button onClick={submitAttach}
-                      className="px-4 py-3 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold rounded-xl transition-colors shrink-0">
-                      추가
-                    </button>
-                    <button onClick={() => { setAttachMode(null); setAttachInput(''); }}
-                      className="px-3 py-3 text-gray-400 hover:text-gray-600 transition-colors">
-                      ✕
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <textarea
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-                      rows={1}
-                      placeholder={tab === 'research' ? '리서치 방향을 입력하세요... (Shift+Enter로 줄바꿈)' : '메시지를 입력하세요... (Shift+Enter로 줄바꿈)'}
-                      className="flex-1 resize-none bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
-                    />
-                    <button onClick={send} disabled={!input.trim() || loading}
-                      className="px-5 py-3 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors shrink-0">
-                      전송
-                    </button>
-                  </>
-                )}
+                {/* 자료 업로드(+): 기획서·리서치 자료·예전에 내보낸 파일을 올리면 빈 항목이 채워짐 */}
+                <button
+                  onClick={() => docInputRef.current?.click()}
+                  disabled={uploadingDoc || loading}
+                  title="자료 업로드 — 기획서·리서치 자료·예전에 내보낸 파일(PDF·TXT)을 올리면 기획·리서치 빈 항목을 자동으로 채워요"
+                  className="w-11 h-11 flex items-center justify-center shrink-0 rounded-xl border border-gray-200 bg-gray-50 text-gray-500 hover:text-emerald-600 hover:border-emerald-300 disabled:opacity-40 disabled:cursor-wait transition-colors"
+                >
+                  {uploadingDoc ? (
+                    <span className="w-4 h-4 border-2 border-gray-300 border-t-emerald-500 rounded-full animate-spin" />
+                  ) : (
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                    </svg>
+                  )}
+                </button>
+                <input
+                  ref={docInputRef}
+                  type="file"
+                  accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
+                  className="hidden"
+                  onChange={(e) => handleDocPick(e.target.files?.[0])}
+                />
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+                  rows={1}
+                  placeholder={tab === 'research' ? '리서치 방향을 입력하세요... (Shift+Enter로 줄바꿈)' : '메시지를 입력하세요... (Shift+Enter로 줄바꿈)'}
+                  className="flex-1 resize-none bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
+                />
+                <button onClick={send} disabled={!input.trim() || loading}
+                  className="px-5 py-3 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors shrink-0">
+                  전송
+                </button>
               </div>
             </div>
           </div>
@@ -1349,45 +1553,28 @@ export default function Home() {
                   statuses={researchStatuses}
                   model={model}
                   onChange={handleResearchFieldChange}
+                  onToggleConfirm={toggleResearchConfirm}
                   onAnalyzeMetrics={analyzePastedMetrics}
                   onDiscover={discoverFromTitle}
                   onApplyToPlanning={applyResearchToPlanning}
                   onAddMetric={addPlatformMetric}
                   onUpdateMetric={updatePlatformMetric}
                   onRemoveMetric={removePlatformMetric}
+                  onAddCompetitor={addCompetitor}
+                  onRemoveCompetitor={removeCompetitor}
+                  onUpdateCompetitor={updateCompetitor}
+                  onAnalyzeCompetitor={analyzeCompetitor}
                 />
               )}
             </div>
           </div>
         </div>
+        )}
       </div>
 
       {/* 팀 AI 사용량 */}
       {showUsage && <UsageSummary userEmail={userEmail} onClose={() => setShowUsage(false)} />}
 
-      {/* 드래그로 끌어온 파일 첨부 확인 */}
-      {pendingDropFile && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-          <div className="bg-white rounded-2xl shadow-xl p-5 w-80">
-            <p className="text-sm font-semibold text-gray-800 mb-1">이 파일을 첨부하시겠습니까?</p>
-            <p className="text-xs text-gray-500 mb-4 truncate">{pendingDropFile.name}</p>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setPendingDropFile(null)}
-                className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors"
-              >
-                취소
-              </button>
-              <button
-                onClick={() => { uploadFileSource(pendingDropFile); setPendingDropFile(null); }}
-                className="px-3 py-1.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors"
-              >
-                첨부
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

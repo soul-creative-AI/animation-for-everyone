@@ -1,6 +1,6 @@
 import type { Project, PlanningData, WorkType } from '@/types';
-import { defaultPlanningData, defaultResearchData } from '@/types';
-import { PLANNING_FIRST, RESEARCH_FIRST } from '@/lib/mock';
+import { defaultPlanningData, defaultResearchData, defaultArchive } from '@/types';
+import { PLANNING_FIRST, RESEARCH_FIRST, ARCHIVE_FIRST } from '@/lib/mock';
 
 // ── 구버전 데이터 마이그레이션 ─────────────────────────────────
 // (현재는 호출되는 곳이 없음 — 구버전 JSON 구조 복구가 필요해질 때 사용)
@@ -62,6 +62,8 @@ export function migrateProject(raw: any): Project {
     researchMode:   raw.researchMode   ?? 'original',
     uploadedSources: raw.uploadedSources ?? [],
     pendingChanges: raw.pendingChanges  ?? [],
+    archive:        raw.archive        ?? { volumes: [] },
+    archiveMessages: raw.archiveMessages ?? [{ role: 'assistant', content: ARCHIVE_FIRST }],
   };
 }
 
@@ -81,6 +83,8 @@ export function createProject(): Project {
     researchMode: 'original',
     uploadedSources: [],
     pendingChanges: [],
+    archive: { ...defaultArchive, volumes: [] },
+    archiveMessages: [{ role: 'assistant', content: ARCHIVE_FIRST }],
   };
 }
 
