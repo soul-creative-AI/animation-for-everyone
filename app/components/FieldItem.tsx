@@ -11,6 +11,7 @@ interface Props {
   type?: 'text' | 'select';
   options?: { value: string; label: string }[];
   onToggleConfirm?: () => void;
+  disabled?: boolean;  // 시작 잠금 — AI와 첫 대화 전까지 직접 입력 비활성
 }
 
 // 확정이 아닐 때만 표시하는 보조 배지
@@ -23,10 +24,11 @@ const STATUS_BADGE: Record<FieldStatus, { label: string; cls: string } | null> =
 
 export default function FieldItem({
   label, value, status = 'undecided', rows = 1, placeholder = '—',
-  onChange, type = 'text', options, onToggleConfirm,
+  onChange, type = 'text', options, onToggleConfirm, disabled = false,
 }: Props) {
   const confirmed = status === 'confirmed';
   const badge = STATUS_BADGE[status];
+  const locked = confirmed || disabled;  // 확정 또는 시작 잠금이면 편집 불가
 
   return (
     <div>
@@ -36,7 +38,7 @@ export default function FieldItem({
           {!confirmed && badge && (
             <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded ${badge.cls}`}>{badge.label}</span>
           )}
-          {onToggleConfirm && (
+          {onToggleConfirm && !disabled && (
             <button
               type="button"
               onClick={onToggleConfirm}
@@ -63,12 +65,14 @@ export default function FieldItem({
       {type === 'select' && options ? (
         <select
           value={value}
-          disabled={confirmed}
+          disabled={locked}
           onChange={(e) => onChange(e.target.value)}
           className={`w-full border rounded-lg px-3 py-2 text-xs outline-none transition-all appearance-none ${
             confirmed
               ? 'bg-emerald-50/40 border-emerald-200 text-gray-600 cursor-not-allowed'
-              : 'bg-gray-50 border-gray-200 text-gray-700 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100'
+              : disabled
+                ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed'
+                : 'bg-gray-50 border-gray-200 text-gray-700 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100'
           }`}
         >
           {options.map((o) => (
@@ -80,12 +84,14 @@ export default function FieldItem({
           value={value}
           rows={rows}
           placeholder={placeholder}
-          readOnly={confirmed}
+          readOnly={locked}
           onChange={(e) => onChange(e.target.value)}
           className={`w-full resize-none border rounded-lg px-3 py-2 text-xs placeholder-gray-300 outline-none transition-all ${
             confirmed
               ? 'bg-emerald-50/40 border-emerald-200 text-gray-600 cursor-not-allowed'
-              : 'bg-gray-50 border-gray-200 text-gray-700 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100'
+              : disabled
+                ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed'
+                : 'bg-gray-50 border-gray-200 text-gray-700 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100'
           }`}
         />
       )}
