@@ -74,7 +74,10 @@ export default function CompetitorAnalysis({ competitors, model, onModelChange, 
             <option key={m.id} value={m.id}>{m.label}</option>
           ))}
         </select>
-        <span className="text-[9px] text-gray-400 shrink-0" title="실제 웹 검색은 선택한 모델과 같은 provider의 저비용 모델로 실행돼요">→ {analyzeModelLabel}</span>
+        {/* 고른 모델이 실제 검색 모델과 다를 때만 안내 (같으면 이름이 중복돼 헷갈림) */}
+        {MODELS.find((m) => m.id === model)?.label !== analyzeModelLabel && (
+          <span className="text-[9px] text-gray-400 shrink-0" title="실제 웹 검색은 선택한 모델과 같은 provider의 저비용 모델로 실행돼요">→ {analyzeModelLabel}</span>
+        )}
       </div>
 
       {/* 작품 리스트 (컴팩트 — 한 줄씩) */}

@@ -37,6 +37,8 @@ export function migrateProject(raw: any): Project {
     tone:         p.tone         ?? '',
     logline:      p.logline      ?? '',
     theme:        p.theme        ?? '',
+    planningIntent:       p.planningIntent       ?? '',
+    differentiationPoint: p.differentiationPoint ?? '',
     synopsis:     p.synopsis     ?? '',
     visualStyle:  p.visualStyle  ?? p.style ?? '',
     targetAudience,

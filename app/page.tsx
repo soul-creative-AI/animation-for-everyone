@@ -139,6 +139,7 @@ export default function Home() {
 
   const bottomRef   = useRef<HTMLDivElement>(null);
   const modelRef    = useRef<HTMLDivElement>(null);
+  const inputRef    = useRef<HTMLTextAreaElement>(null);  // 입력창 높이 자동 조절용
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firstProjectCreated = useRef(false);  // 첫 프로젝트 자동 생성 중복 방지
   const docInputRef = useRef<HTMLInputElement>(null);  // 입력창 + 버튼용 파일 선택
@@ -208,6 +209,14 @@ export default function Home() {
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
+  // 입력 내용이 길어지면 입력창 높이를 자동으로 늘림 (최대 200px, 그 이상은 스크롤)
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';               // 줄어들 때도 반영되도록 먼저 초기화
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [input]);
+
   /* ── 자동저장: 변경 후 2초간 조용하면 자동으로 저장 ── */
   useEffect(() => {
     if (saved || !currentId) return;
@@ -220,16 +229,28 @@ export default function Home() {
   }, [title, planningMsgs, planning, planningStatuses, researchMsgs, research, researchStatuses, researchMode, uploadedSources, pendingChanges, archive, archiveMsgs]);
 
   /* ── 프로젝트 로드 ── */
+  /* 이미 저장된 데이터에 남아 있는 Claude 웹 검색 인용 태그(<cite index="…">…</cite>)를 불러올 때 정리.
+     신규 조사는 서버에서 제거하지만, 그 전에 저장된 프로젝트는 여기서 걷어낸다. (문자열 필드만, 내용은 유지) */
+  function stripCitationTags<T extends Record<string, unknown>>(obj: T): T {
+    const out = { ...obj };
+    for (const [k, v] of Object.entries(out)) {
+      if (typeof v === 'string' && v.includes('<cite')) {
+        (out as Record<string, unknown>)[k] = v.replace(/<\/?cite\b[^>]*>/gi, '');
+      }
+    }
+    return out;
+  }
+
   function applyProject(p: Project) {
     setCurrentId(p.id);
     setTitle(p.title);
     setTab(p.selectedTab);
     setPlanningMsgs([...p.planningMessages]);
-    setPlanning({ ...defaultPlanningData, ...p.planning });
+    setPlanning(stripCitationTags({ ...defaultPlanningData, ...p.planning }));
     setPlanningStatuses({ ...p.planningStatuses });
     setResearchMsgs([...p.researchMessages]);
     // 필드 구조가 바뀌기 전에 저장된 프로젝트도 새 필드가 빈 문자열로 채워지도록 병합
-    setResearch({ ...defaultResearchData, ...p.research });
+    setResearch(stripCitationTags({ ...defaultResearchData, ...p.research }));
     setResearchStatuses({ ...p.researchStatuses });
     setResearchMode(p.researchMode);
     setUploadedSources([...p.uploadedSources]);
@@ -486,6 +507,31 @@ export default function Home() {
     const pageHeightPt = 802; // A4 높이(842pt)에서 상하 여백(20pt×2) 뺀 값
     // canvas.width 기준으로 한 페이지분 캔버스 픽셀 높이 계산 (margin 제외)
     const pageHeightPx = (pageHeightPt / pageWidth) * canvas.width;
+
+    // DOM에서 잰 경계는 html2canvas가 렌더한 캔버스와 미세하게 어긋날 수 있다
+    // (복제 문서에서 폰트·줄바꿈이 달라지기 때문). 그대로 자르면 글자 가운데가 잘리므로,
+    // 자를 지점에서 위로 올라가며 "완전히 비어 있는 가로줄"을 찾아 거기서 자른다.
+    const srcCtx = canvas.getContext('2d');
+    function findBlankCut(preferred: number, lowerLimit: number): number {
+      if (!srcCtx) return preferred;
+      const target = Math.floor(preferred);
+      const searchTop = Math.max(Math.floor(lowerLimit) + 1, target - 500);
+      const h = target - searchTop;
+      if (h <= 0) return preferred;
+      try {
+        const strip = srcCtx.getImageData(0, searchTop, canvas.width, h).data;
+        for (let y = h - 1; y >= 0; y--) {
+          let blank = true;
+          for (let x = 0; x < canvas.width; x += 2) {  // 2px 간격 샘플링 — 속도 확보
+            const i = (y * canvas.width + x) * 4;
+            if (strip[i] < 250 || strip[i + 1] < 250 || strip[i + 2] < 250) { blank = false; break; }
+          }
+          if (blank) return searchTop + y;
+        }
+      } catch { /* 캔버스를 읽을 수 없으면 원래 경계 사용 */ }
+      return preferred;
+    }
+
     let renderedHeight = 0;
     let first = true;
     while (renderedHeight < canvas.height) {
@@ -493,7 +539,12 @@ export default function Home() {
       // 이 페이지 구간 안에서 블록 중간을 지나지 않는 가장 아래쪽 경계를 찾아 거기서 자른다.
       // 블록 하나가 한 페이지보다 커서 안전한 경계가 없으면(예: 아주 긴 줄거리) 어쩔 수 없이 그대로 자른다.
       const safeBottoms = blockBottomsPx.filter((b) => b > renderedHeight + 1 && b <= maxBottom);
-      const sliceEnd = safeBottoms.length > 0 ? safeBottoms[safeBottoms.length - 1] : maxBottom;
+      const preferred = safeBottoms.length > 0 ? safeBottoms[safeBottoms.length - 1] : maxBottom;
+      // 마지막 페이지는 끝까지 그대로 싣는다 (여백 탐색 불필요)
+      let sliceEnd = maxBottom >= canvas.height ? canvas.height : findBlankCut(preferred, renderedHeight);
+      // 소수 좌표로 자르면 페이지마다 미세하게 밀려 누적되므로 정수로 맞춘다
+      sliceEnd = Math.min(canvas.height, Math.round(sliceEnd));
+      if (sliceEnd <= renderedHeight) sliceEnd = Math.min(canvas.height, Math.round(maxBottom));  // 진행 정지 방어
       const sliceHeight = sliceEnd - renderedHeight;
       const sliceCanvas = document.createElement('canvas');
       sliceCanvas.width = canvas.width;
@@ -544,7 +595,7 @@ export default function Home() {
     try {
       const res  = await fetch('/api/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next, model, planningData: planning, researchData: research }),
+        body: JSON.stringify({ messages: next, model, planningData: planning, researchData: research, archiveData: archive }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -569,6 +620,9 @@ export default function Home() {
       const content = e?.message || '오류가 발생했습니다. 다시 시도해주세요.';
       setPlanningMsgs((prev) => [...prev, { role: 'assistant', content }]);
     }
+    // AI 응답으로 바뀐 내용(답변·기획 필드)을 반드시 자동저장 대상으로 표시.
+    // 이게 없으면, 전송 직후 돌아간 자동저장이 saved=true로 바꿔버려 응답 결과가 저장되지 않는다.
+    setSaved(false);
   }
 
   /* ── 리서치 탭: AI 전송 ── */
@@ -849,7 +903,9 @@ export default function Home() {
     if (plot) lines.push(`줄거리: ${plot.slice(0, 600)}`);  // 토큰 절약을 위해 앞부분만
     const target = planning.targetAudience || research.audienceProfile;
     if (target) lines.push(`타깃: ${target}`);
-    if (research.differentiation) lines.push(`차별화 방향: ${research.differentiation}`);
+    const diff = planning.differentiationPoint || research.differentiation;
+    if (diff) lines.push(`차별화 방향: ${diff}`);
+    if (planning.planningIntent) lines.push(`기획 의도: ${planning.planningIntent}`);
     return lines.join('\n');
   }
 
@@ -1083,6 +1139,7 @@ export default function Home() {
           role: 'assistant',
           content: `문서(${file.name})를 읽었지만 새로 채울 빈 항목이 없었어요. (이미 채워져 있거나 확정된 항목은 건드리지 않아요)`,
         }]);
+        setSaved(false);  // 안내 메시지도 대화 기록이므로 저장 대상으로 표시
         return true;
       }
       setSaved(false);
@@ -1168,6 +1225,31 @@ export default function Home() {
     setPlanningMsgs((prev) => [...prev, { role: 'assistant', content: guideLines.join('\n') }]);
     setTab('planning');
     setSaved(false);
+  }
+
+  /* ── 자동 기획 가능 여부 ──
+     리서치나 원작 아카이브에 채워진 정보가 있으면, 기획 탭 진입 시 자동 기획을 제안한다. */
+  const hasResearchData = Object.values(research).some((v) => typeof v === 'string' && v.trim() !== '');
+  const hasArchiveData = (archive?.volumes ?? []).some(
+    (v) => v.summary?.trim() || (v.chapters ?? []).some((c) => c.summary?.trim() || c.title?.trim()),
+  );
+  const canAutoPlan = hasResearchData || hasArchiveData;
+
+  /* ── 탭 전환 ──
+     기획 탭에 처음 들어갈 때(아직 대화 전) 리서치/원작에 근거 정보가 있으면
+     첫 인사말을 "자동 기획을 시작할까요?" 제안으로 바꾼다. 없으면 기본 인사말 유지. */
+  function switchTab(t: ProjectTab) {
+    if (t === 'planning' && canAutoPlan) {
+      setPlanningMsgs((prev) => {
+        // 아직 손대지 않은 기본 인사말일 때만 교체 (이미 대화가 시작됐으면 그대로 둠)
+        const pristine = prev.length === 1 && prev[0].role === 'assistant' && prev[0].content === PLANNING_FIRST;
+        if (!pristine) return prev;
+        const sources = [hasResearchData && '리서치', hasArchiveData && '원작 아카이브'].filter(Boolean).join('와 ');
+        const offer = `${sources}에 정리된 내용을 바탕으로 기획을 자동으로 시작해볼 수 있어요. 원하는 기획 방향(장르·톤·타깃 등)이 있으면 알려주세요. 특별히 없으면 "자동으로 잡아줘"라고 말씀해주시면 정리된 내용으로 기획 초안을 만들어 드릴게요.`;
+        return [{ role: 'assistant', content: offer }];
+      });
+    }
+    setTab(t);
   }
 
   /* ── 플랫폼 페이지 붙여넣기 → 지표·독자반응 추출 ── */
@@ -1345,7 +1427,7 @@ export default function Home() {
         {/* 탭 바 */}
         <div className="flex items-center gap-1 px-6 border-b border-gray-200 bg-white shrink-0">
           {(['research', 'archive', 'planning'] as ProjectTab[]).map((t) => (
-            <button key={t} onClick={() => setTab(t)}
+            <button key={t} onClick={() => switchTab(t)}
               className={`px-4 py-2.5 text-xs font-semibold transition-colors border-b-2 -mb-px ${
                 tab === t ? 'text-emerald-600 border-emerald-500' : 'text-gray-500 border-transparent hover:text-gray-700'
               }`}
@@ -1522,12 +1604,13 @@ export default function Home() {
                   onChange={(e) => handleDocPick(e.target.files?.[0])}
                 />
                 <textarea
+                  ref={inputRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
                   rows={1}
                   placeholder={tab === 'research' ? '리서치 방향을 입력하세요... (Shift+Enter로 줄바꿈)' : '메시지를 입력하세요... (Shift+Enter로 줄바꿈)'}
-                  className="flex-1 resize-none bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-all"
+                  className="flex-1 resize-none overflow-y-auto bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-colors"
                 />
                 <button onClick={send} disabled={!input.trim() || loading}
                   className="px-5 py-3 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors shrink-0">
