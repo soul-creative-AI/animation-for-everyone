@@ -86,7 +86,8 @@ export default function FieldItem({
           placeholder={placeholder}
           readOnly={locked}
           onChange={(e) => onChange(e.target.value)}
-          className={`w-full resize-none border rounded-lg px-3 py-2 text-xs placeholder-gray-300 outline-none transition-all ${
+          title="아래 모서리를 드래그하면 칸 높이를 늘릴 수 있어요"
+          className={`w-full resize-y min-h-[2.25rem] border rounded-lg px-3 py-2 text-xs placeholder-gray-300 outline-none transition-colors ${
             confirmed
               ? 'bg-emerald-50/40 border-emerald-200 text-gray-600 cursor-not-allowed'
               : disabled

@@ -28,6 +28,12 @@ async function withRetry<T>(fn: () => Promise<T>, label: string, retries = 3): P
   throw lastErr;
 }
 
+// Claude 웹 검색 응답의 인용 태그(<cite index="1-11,2-1">…</cite>)를 제거한다.
+// 태그만 벗기고 감싸인 본문은 그대로 두며, 태그가 JSON 문자열 값 안에 있어도 구조를 깨지 않는다.
+function stripCitations(text: string): string {
+  return text.replace(/<\/?cite\b[^>]*>/gi, '');
+}
+
 // 모델 과부하(503/429) 여부 판별 — 사용자에게 안내 메시지를 다르게 주기 위함
 function isOverloadError(e: unknown): boolean {
   const status = (e as { status?: number })?.status;
@@ -170,6 +176,8 @@ const DOC_IMPORT_PROMPT = `당신은 애니메이션 기획·리서치 자료를
     "tone": "톤/분위기",
     "logline": "로그라인 (한두 문장)",
     "theme": "주제",
+    "planningIntent": "기획 의도 (왜 이 작품을 만드는지 — 배경·목표·전하려는 가치)",
+    "differentiationPoint": "차별화 포인트 (유사 작품 대비 이 기획만의 강점)",
     "synopsis": "시놉시스",
     "visualStyle": "비주얼 스타일 (그림체·색감·연출 방향 등)",
     "targetAudience": "타깃 시청자",
@@ -401,7 +409,8 @@ async function callClaude(text: string, modelId: string, p: Prompts): Promise<Ai
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const response = await client.messages.create({
     model: modelId,
-    max_tokens: 4096,
+    // Fable은 thinking이 항상 켜져 max_tokens를 잠식 → JSON이 잘리므로 다른 Claude 함수와 동일하게 상향
+    max_tokens: 16384,
     system: p.system,
     messages: [
       {
@@ -414,7 +423,9 @@ async function callClaude(text: string, modelId: string, p: Prompts): Promise<Ai
       },
     ],
   });
-  const out = response.content[0].type === 'text' ? response.content[0].text : '';
+  // Fable 등 thinking 모델은 content[0]이 thinking 블록이므로 첫 text 블록을 찾아야 함
+  const block = response.content.find((b) => b.type === 'text');
+  const out = block?.type === 'text' ? block.text : '';
   return { text: out, usage: claudeUsage(response.usage) };
 }
 
@@ -498,7 +509,7 @@ export async function POST(req: NextRequest) {
     // 웹 검색 실행기 (discover/competitor 공용) — provider별 저비용 모델 사용
     async function runWebSearch(query: string, system: string, label: string): Promise<AiResult> {
       const provider = PROVIDER_OF_MODEL[discoverModel!.alias];
-      return withRetry(() => {
+      const r = await withRetry(() => {
         switch (provider) {
           case 'gemini': return callGeminiSearch(query, discoverModel!.apiModel, system);
           case 'openai': return callOpenAISearch(query, discoverModel!.apiModel, system);
@@ -506,6 +517,9 @@ export async function POST(req: NextRequest) {
           default:       return callClaudeSearch(query, discoverModel!.apiModel, system);
         }
       }, label);
+      // Claude 웹 검색은 인용을 <cite index="...">…</cite>로 감싸 반환한다.
+      // 그대로 두면 JSON 문자열 값 안에 태그가 섞여 화면·PDF에 그대로 노출되므로 태그만 제거(내용은 유지).
+      return { ...r, text: stripCitations(r.text) };
     }
 
     // ── 경쟁작 분석: 경쟁작 1개를 웹 검색으로 조사해 우리 작품 대비 분석 ──

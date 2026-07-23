@@ -26,6 +26,8 @@ export const FIELDS: FieldConfig[] = [
   { key: 'tone',           label: '톤/분위기' },
   { key: 'logline',        label: '로그라인', rows: 2 },
   { key: 'theme',          label: '주제' },
+  { key: 'planningIntent', label: '기획 의도', rows: 3, placeholder: '왜 지금 이 작품을 만드는가 — 배경·목표·전하려는 가치' },
+  { key: 'differentiationPoint', label: '차별화 포인트', rows: 3, placeholder: '유사 작품 대비 이 기획만의 강점' },
   { key: 'synopsis',       label: '시놉시스', rows: 3 },
   { key: 'visualStyle',    label: '비주얼 스타일' },
   { key: 'targetAudience', label: '타깃 시청자', rows: 2, placeholder: '예: 15~24세 중심, 판타지 액션을 선호하는 시청자' },

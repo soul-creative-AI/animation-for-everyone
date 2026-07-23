@@ -8,6 +8,31 @@ import { checkBudgetLock, budgetLockMessage } from '@/lib/budgetGuard';
 
 interface AiResult { text: string; usage: TokenUsage; }
 
+// 일시적 오류(503 과부하 / 429 rate limit)면 지수 백오프로 재시도 (analyze-source와 동일 패턴)
+// GoogleGenerativeAI 오류는 e.status가 없을 수 있어 메시지에서 503/429/overload도 함께 판별
+function transientStatus(e: unknown): boolean {
+  const status = (e as { status?: number })?.status;
+  if (status === 503 || status === 429) return true;
+  const msg = (e as { message?: string })?.message ?? '';
+  return /\b(503|429)\b|Service Unavailable|high demand|overloaded|rate limit/i.test(msg);
+}
+
+async function withRetry<T>(fn: () => Promise<T>, label: string, retries = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (!transientStatus(e) || i === retries - 1) throw e;
+      const wait = 1500 * 2 ** i;  // 1.5s → 3s → 6s
+      console.warn(`[chat] ${label} 과부하 — ${wait}ms 후 재시도 (${i + 1}/${retries})`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw lastErr;
+}
+
 const PLANNING_SYSTEM_PROMPT = `당신은 애니메이션 기획 전문가 PD입니다. 사용자가 애니메이션 아이디어를 구체화할 수 있도록 대화를 통해 도와주세요.
 
 대화 규칙:
@@ -15,6 +40,7 @@ const PLANNING_SYSTEM_PROMPT = `당신은 애니메이션 기획 전문가 PD입
 - 친근하고 따뜻한 말투로 대화하세요
 - 사용자의 답변을 바탕으로 자연스럽게 이어가세요
 - 아이디어가 구체화될수록 더 깊은 질문을 하세요
+- 단, 사용자가 "자동으로 잡아줘", "리서치 바탕으로 기획해줘"처럼 자동 기획을 요청하거나 기획 방향을 제시하며 시작을 요청하면: 한 번에 하나씩 묻지 말고, 주입된 [리서치에서 파악된 정보]와 [원작 권/화별 요약 인덱스]를 근거로 비어 있는 기획 항목을 최대한 구체적으로 채워 아래 JSON 형식으로 한 번에 정리하세요. 근거가 부족해 확신이 어려운 항목만 빈 문자열로 두고, 채운 뒤 "초안을 잡아봤어요, 검토하고 수정할 부분을 알려주세요"처럼 검토를 요청하세요.
 
 정보 추출 규칙:
 - 대화 중 파악된 정보가 있으면 반드시 응답 마지막에 아래 형식으로 추가하세요
@@ -28,6 +54,8 @@ const PLANNING_SYSTEM_PROMPT = `당신은 애니메이션 기획 전문가 PD입
   "tone": "톤/분위기",
   "logline": "한줄 소개",
   "theme": "주제",
+  "planningIntent": "기획 의도 — 왜 지금 이 작품을 만드는지(배경·목표·전하려는 가치)를 2~4문장으로",
+  "differentiationPoint": "차별화 포인트 — 유사 작품 대비 이 기획만의 강점을 구체적으로",
   "synopsis": "시놉시스",
   "visualStyle": "비주얼 스타일 (예: 2D 감성, 수채화풍)",
   "targetAudience": "파악된 정보만 자유롭게 서술 (예: 15~24세 중심, 판타지 액션 선호 시청자)",
@@ -129,7 +157,9 @@ async function callClaude(messages: Message[], modelId: string, systemPrompt: st
       content: m.content,
     })),
   });
-  const text = response.content[0].type === 'text' ? response.content[0].text : '';
+  // Fable 등 thinking 모델은 content[0]이 thinking 블록이므로 첫 text 블록을 찾아야 함
+  const block = response.content.find((b) => b.type === 'text');
+  const text = block?.type === 'text' ? block.text : '';
   return { text, usage: claudeUsage(response.usage) };
 }
 
@@ -216,11 +246,15 @@ export async function POST(req: NextRequest) {
         contextBlock = `\n\n아래는 이 작품에 대해 이미 파악된 정보입니다. 추천·제안을 할 때 이 정보에 맞게 구체적으로 답하세요 (일반론 금지).${contextBlock}`;
       }
 
-      // 원작 아카이브가 있으면 "몇 화/몇 권" 질문에 근거로 쓰도록 인덱스를 주입 (리서치 탭 한정)
-      if (context === 'research') {
+      // 원작 아카이브가 있으면 근거로 쓰도록 인덱스를 주입 (리서치·기획 탭)
+      // 탭 성격에 맞게 안내 문구를 달리함 — 리서치는 "몇 권 몇 화" 조회, 기획은 원작 근거 활용
+      if (context === 'research' || context === 'planning') {
         const archiveCtx = summarizeArchive(archiveData);
         if (archiveCtx) {
-          contextBlock += `\n\n[원작 권/화별 요약 인덱스]\n사용자가 "~한 장면 몇 화야?", "○○가 나오는 화는?"처럼 물으면 아래 인덱스에서 찾아 "N권 M화"로 정확히 답하세요. 인덱스에 없으면 모른다고 하세요.\n${archiveCtx}`;
+          const guide = context === 'research'
+            ? '사용자가 "~한 장면 몇 화야?", "○○가 나오는 화는?"처럼 물으면 아래 인덱스에서 찾아 "N권 M화"로 정확히 답하세요. 인덱스에 없으면 모른다고 하세요.'
+            : '아래는 이 작품 원작의 권/화별 요약입니다. 기획·제안·각색 방향을 논의할 때 원작의 설정·캐릭터·전개를 근거로 구체적으로 활용하고, 사용자가 "원작에서 ○○가 어땠지?", "그 장면 몇 화야?"처럼 물으면 인덱스에서 찾아 답하세요. 인덱스에 없는 내용은 지어내지 마세요.';
+          contextBlock += `\n\n[원작 권/화별 요약 인덱스]\n${guide}\n${archiveCtx}`;
         }
       }
 
@@ -229,19 +263,22 @@ export async function POST(req: NextRequest) {
 
     let result: AiResult = { text: '', usage: EMPTY_USAGE };
 
-    switch (model) {
-      case 'gemini':        result = await callGemini(messages, systemPrompt); break;
-      case 'claude-haiku':  result = await callClaude(messages, 'claude-haiku-4-5-20251001', systemPrompt); break;
-      case 'claude-sonnet': result = await callClaude(messages, 'claude-sonnet-4-5', systemPrompt); break;
-      case 'claude-fable':  result = await callClaude(messages, 'claude-fable-5', systemPrompt); break;
-      case 'gpt-4o-mini':   result = await callOpenAI(messages, 'gpt-4o-mini', systemPrompt); break;
-      case 'gpt-4o':        result = await callOpenAI(messages, 'gpt-4o', systemPrompt); break;
-      case 'gpt-4.5':       result = await callOpenAI(messages, 'gpt-4.5-preview', systemPrompt); break;
-      case 'gpt-5.6-sol':   result = await callOpenAI(messages, 'gpt-5.6-sol', systemPrompt); break;
-      case 'gpt-5.6-luna':  result = await callOpenAI(messages, 'gpt-5.6-luna', systemPrompt); break;
-      case 'gpt-5.6-terra': result = await callOpenAI(messages, 'gpt-5.6-terra', systemPrompt); break;
-      default:              result = await callGemini(messages, systemPrompt);
-    }
+    // 일시적 과부하(503/429)는 자동 재시도 — 이전엔 재시도가 없어 Gemini "high demand" 503이 곧바로 오류로 표출됐음
+    result = await withRetry(() => {
+      switch (model) {
+        case 'gemini':        return callGemini(messages, systemPrompt);
+        case 'claude-haiku':  return callClaude(messages, 'claude-haiku-4-5-20251001', systemPrompt);
+        case 'claude-sonnet': return callClaude(messages, 'claude-sonnet-4-5', systemPrompt);
+        case 'claude-fable':  return callClaude(messages, 'claude-fable-5', systemPrompt);
+        case 'gpt-4o-mini':   return callOpenAI(messages, 'gpt-4o-mini', systemPrompt);
+        case 'gpt-4o':        return callOpenAI(messages, 'gpt-4o', systemPrompt);
+        case 'gpt-4.5':       return callOpenAI(messages, 'gpt-4.5-preview', systemPrompt);
+        case 'gpt-5.6-sol':   return callOpenAI(messages, 'gpt-5.6-sol', systemPrompt);
+        case 'gpt-5.6-luna':  return callOpenAI(messages, 'gpt-5.6-luna', systemPrompt);
+        case 'gpt-5.6-terra': return callOpenAI(messages, 'gpt-5.6-terra', systemPrompt);
+        default:              return callGemini(messages, systemPrompt);
+      }
+    }, model);
 
     const { text, usage } = result;
 
@@ -273,6 +310,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ text: cleanText, extracted, usage, action });
   } catch (e) {
     console.error(e);
+    // 재시도 후에도 과부하면 사용자에게 "잠시 후 재시도/모델 변경"을 안내 (막연한 오류 메시지 대신)
+    if (transientStatus(e)) {
+      return NextResponse.json(
+        { error: 'AI 서버가 잠시 혼잡해요. 잠시 후 다시 시도하거나 다른 모델을 선택해주세요.' },
+        { status: 503 },
+      );
+    }
     return NextResponse.json({ error: '오류가 발생했습니다.' }, { status: 500 });
   }
 }

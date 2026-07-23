@@ -24,6 +24,8 @@ export interface PlanningData {
   tone: string;
   logline: string;
   theme: string;
+  planningIntent: string;       // 기획 의도 — 왜 이 작품을 만드는가
+  differentiationPoint: string; // 차별화 포인트 — 유사작 대비 이 기획만의 강점
   synopsis: string;
   visualStyle: string;
   targetAudience: string;
@@ -40,6 +42,8 @@ export const defaultPlanningData: PlanningData = {
   tone: '',
   logline: '',
   theme: '',
+  planningIntent: '',
+  differentiationPoint: '',
   synopsis: '',
   visualStyle: '',
   targetAudience: '',
